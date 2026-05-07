@@ -1,0 +1,228 @@
+{# Run-time settings modal for the benchmark tabs.
+
+   Renders the same field set as the model-settings modal, but bound to a
+   per-tab state object (benchSettings or accSettings). Changes are
+   ephemeral by default — applied to the next bench run only — with
+   explicit Save / Save-as-Profile / Run / Reset actions.
+
+   Parameters:
+     prefix             'bench' or 'acc' — used to derive every Alpine binding
+                        (e.g. benchSettingsOpen, accSettingsReset(), …).
+     run_fn             JS expression invoked by the Run benchmark button
+                        (e.g. 'startBenchmark()').
+     run_disabled_expr  JS expression that evaluates true when the Run
+                        benchmark button must be disabled.
+     placeholder        Suggested profile name shown in the inline create form.
+#}
+{% from "dashboard/_settings_fields.html" import settings_fields %}
+
+{% macro bench_settings_modal(prefix, run_fn, run_disabled_expr, placeholder='') -%}
+{%- set state           = prefix ~ 'Settings' -%}
+{%- set selected_model  = prefix ~ 'SelectedModel' -%}
+{%- set running         = prefix ~ 'Running' -%}
+{%- set open_flag       = prefix ~ 'SettingsOpen' -%}
+{%- set saving          = prefix ~ 'SettingsSaving' -%}
+{%- set recently_saved  = prefix ~ 'SettingsRecentlySaved' -%}
+{%- set status          = prefix ~ 'SettingsStatus' -%}
+{%- set save_open       = prefix ~ 'SettingsSaveProfileOpen' -%}
+{%- set new_profile     = prefix ~ 'SettingsNewProfile' -%}
+{%- set save_confirm    = prefix ~ 'SettingsSaveAsProfileConfirm()' -%}
+{%- set save_cancel     = prefix ~ 'SettingsSaveProfileOpen = false' -%}
+{%- set dirty_fn        = prefix ~ 'SettingsDirty()' -%}
+{%- set reload_fn       = prefix ~ 'SettingsRequiresReload()' -%}
+{%- set reset_fn        = prefix ~ 'SettingsReset()' -%}
+{%- set save_fn         = prefix ~ 'SettingsSave()' -%}
+{%- set save_as_fn      = prefix ~ 'SettingsSaveAsProfile()' -%}
+{%- set profiles        = prefix ~ 'Profiles' -%}
+{%- set scope           = prefix ~ 'ProfileScope' -%}
+{%- set active_profile  = prefix ~ 'ActiveProfileName' -%}
+{%- set apply_preset    = prefix ~ 'ApplyPreset' -%}
+{%- set apply_template  = prefix ~ 'ApplyTemplate' -%}
+{%- set apply_profile   = prefix ~ 'ApplyProfile' -%}
+
+<div x-show="{{ open_flag }}" x-cloak
+     class="fixed inset-0 z-50 overflow-y-auto"
+     @keydown.escape.window="{{ open_flag }} = false"
+     x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-150"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0">
+    <div class="fixed inset-0 bg-black/50" @click="{{ open_flag }} = false"></div>
+
+    <div class="flex min-h-full items-center justify-center p-4">
+        <div class="relative bg-white rounded-2xl sm:rounded-3xl shadow-2xl w-full max-w-4xl p-4 sm:p-8"
+             @click.stop
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 scale-95"
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100 scale-100"
+             x-transition:leave-end="opacity-0 scale-95">
+
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6 gap-4">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                        <h3 class="text-xs font-bold uppercase tracking-widest text-neutral-400">Run-time Settings</h3>
+                        <span x-show="{{ dirty_fn }}" x-cloak
+                              class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold uppercase tracking-wider">modified</span>
+                    </div>
+                    <h4 class="text-xl font-bold tracking-tight text-neutral-900 truncate"
+                        x-text="{{ selected_model }}?.name || {{ selected_model }}?.id || 'Select a model'"></h4>
+                    <p class="text-xs text-neutral-500 mt-1">
+                        Changes apply to the next run only. Use Save to persist, or Save as Profile to bookmark.
+                    </p>
+                </div>
+
+                <!-- Right-side header controls: Reset (text only) + X close. -->
+                <div class="flex items-center gap-1 flex-shrink-0">
+                    <button @click="{{ reset_fn }}"
+                            :disabled="!{{ dirty_fn }} || {{ running }}"
+                            class="px-3 py-1.5 text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        Reset
+                    </button>
+                    <button @click="{{ open_flag }} = false"
+                            aria-label="Close"
+                            class="p-2 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-full transition-all">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <p x-show="{{ reload_fn }}" x-cloak
+               class="text-xs text-amber-600 mb-4 flex items-start gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+                <i data-lucide="alert-triangle" class="w-3.5 h-3.5 flex-shrink-0 mt-0.5"></i>
+                <span>Engine-init flags changed (TurboQuant / DFlash / MTP / IndexCache). The bench reloads the model on each run, so no extra cost.</span>
+            </p>
+
+            <!-- Quick-apply: presets / global templates / model profiles -->
+            <div class="mb-5 p-4 bg-neutral-50 rounded-xl border border-neutral-200">
+                <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+                    <h3 class="text-xs font-bold uppercase tracking-widest text-neutral-400">Apply Profile / Template</h3>
+                    <div class="flex items-center gap-1 bg-neutral-100 rounded-lg p-0.5">
+                        <button type="button" @click="{{ scope }} = 'preset'"
+                                :class="{{ scope }} === 'preset' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'"
+                                class="px-3 py-1 text-xs font-medium rounded-md transition-all">Preset</button>
+                        <button type="button" @click="{{ scope }} = 'global'"
+                                :class="{{ scope }} === 'global' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'"
+                                class="px-3 py-1 text-xs font-medium rounded-md transition-all">Global Template</button>
+                        <button type="button" @click="{{ scope }} = 'model'"
+                                :class="{{ scope }} === 'model' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'"
+                                class="px-3 py-1 text-xs font-medium rounded-md transition-all">Model Profile</button>
+                    </div>
+                </div>
+
+                <!-- Preset scope -->
+                <div x-show="{{ scope }} === 'preset'" x-cloak class="flex flex-wrap items-center gap-2">
+                    <template x-for="p in presets" :key="'{{ prefix }}-preset-' + p.name">
+                        <button type="button" @click="{{ apply_preset }}(p)"
+                                :title="p.description || ''"
+                                class="px-2.5 py-1 text-xs rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-all"
+                                x-text="p.display_name || p.name"></button>
+                    </template>
+                    <span x-show="presets.length === 0" class="text-xs text-neutral-400 italic">no presets available</span>
+                </div>
+
+                <!-- Global template scope -->
+                <div x-show="{{ scope }} === 'global'" x-cloak class="flex flex-wrap items-center gap-2">
+                    <template x-for="tmpl in templates" :key="'{{ prefix }}-tmpl-' + tmpl.name">
+                        <button type="button" @click="{{ apply_template }}(tmpl)"
+                                :title="tmpl.description || ''"
+                                class="px-2.5 py-1 text-xs rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-all"
+                                x-text="tmpl.display_name || tmpl.name"></button>
+                    </template>
+                    <span x-show="templates.length === 0" class="text-xs text-neutral-400 italic">no templates yet — create them in the model settings modal</span>
+                </div>
+
+                <!-- Model profile scope -->
+                <div x-show="{{ scope }} === 'model'" x-cloak class="flex flex-wrap items-center gap-2">
+                    <template x-for="p in {{ profiles }}" :key="'{{ prefix }}-profile-' + p.name">
+                        <button type="button" @click="{{ apply_profile }}(p)"
+                                :title="p.description || ''"
+                                :class="{{ active_profile }} === p.name
+                                    ? 'bg-emerald-500 text-white border border-emerald-500'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'"
+                                class="px-2.5 py-1 text-xs rounded-full transition-all"
+                                x-text="p.display_name || p.name"></button>
+                    </template>
+                    <span x-show="{{ profiles }}.length === 0" class="text-xs text-neutral-400 italic">no profiles for this model — use Save as Profile below to create one</span>
+                </div>
+            </div>
+
+            <!-- Settings fields -->
+            {{ settings_fields(state, selected_model, mode='panel') }}
+
+            <!-- Save-as-Profile inline name prompt -->
+            <div x-show="{{ save_open }}" x-cloak x-transition
+                 class="mt-6 p-4 bg-neutral-50 border border-neutral-200 rounded-xl space-y-2">
+                <label class="block text-xs font-bold uppercase tracking-wider text-neutral-500">Profile name</label>
+                <input type="text" x-model="{{ new_profile }}.display_name"
+                       placeholder="{{ placeholder }}"
+                       class="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:ring-2 focus:ring-neutral-900 focus:border-transparent">
+                <input type="text" x-model="{{ new_profile }}.description"
+                       placeholder="Optional description"
+                       class="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:ring-2 focus:ring-neutral-900 focus:border-transparent">
+                <div class="flex justify-end gap-2 pt-1">
+                    <button @click="{{ save_cancel }}"
+                            class="px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 rounded-lg">Cancel</button>
+                    <button @click="{{ save_confirm }}"
+                            :disabled="!{{ new_profile }}.display_name?.trim()"
+                            class="px-3 py-1.5 text-xs bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed">Create</button>
+                </div>
+            </div>
+
+            <!-- Action row — icons only.
+                 Persistence state is read off the buttons themselves: the Save
+                 button is dimmed when there is nothing to save, swaps to a
+                 spinner while saving, and flashes a check on success.
+                 Order (left → right): bookmark this state, persist this
+                 state, run with this state. -->
+            <div class="flex items-center justify-end gap-2 mt-8 pt-4 border-t border-neutral-100">
+
+                <!-- Save as Profile (bookmark-plus) -->
+                <button @click="{{ save_as_fn }}"
+                        :disabled="!{{ dirty_fn }} || !{{ selected_model }} || {{ running }}"
+                        aria-label="Save as Profile"
+                        title="Save as Profile…"
+                        class="p-2 rounded-lg border border-neutral-200 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                    <i data-lucide="bookmark-plus" class="w-6 h-6"></i>
+                </button>
+
+                <!-- Save to model settings (save → check → spinner).
+                     Title/aria-label switch with state so hover and screen
+                     readers get the same context the icon implies. -->
+                <button @click="{{ save_fn }}"
+                        :disabled="!{{ dirty_fn }} || !{{ selected_model }} || {{ running }} || {{ saving }}"
+                        :class="{{ recently_saved }} ? 'text-emerald-600 border border-emerald-200 bg-emerald-50' : 'text-white bg-neutral-900 hover:bg-neutral-800'"
+                        :aria-label="{{ saving }} ? 'Saving' : ({{ recently_saved }} ? 'Saved' : ({{ dirty_fn }} ? 'Save to model settings' : 'No changes to save'))"
+                        :title="{{ saving }} ? 'Saving…' : ({{ recently_saved }} ? 'Saved' : ({{ dirty_fn }} ? 'Save to model settings' : 'No changes to save'))"
+                        class="p-2 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                    <span x-show="{{ saving }}" x-cloak class="block">
+                        <svg class="animate-spin w-6 h-6" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                    </span>
+                    <i data-lucide="check"
+                       x-show="!{{ saving }} && {{ recently_saved }}"
+                       x-cloak class="w-6 h-6"></i>
+                    <i data-lucide="save"
+                       x-show="!{{ saving }} && !{{ recently_saved }}"
+                       class="w-6 h-6"></i>
+                </button>
+
+                <!-- Run benchmark (play) — primary action visually rightmost. -->
+                <button @click="{{ run_fn }}; {{ open_flag }} = false"
+                        :disabled="{{ run_disabled_expr }}"
+                        aria-label="Run benchmark"
+                        title="Run benchmark"
+                        class="p-2 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 hover:border-neutral-400 text-neutral-900 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                    <i data-lucide="play" class="w-6 h-6"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{%- endmacro %}

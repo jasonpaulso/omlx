@@ -75,6 +75,21 @@ class TestAccuracyBenchmarkRequest:
         )
         assert req.enable_thinking is True
 
+    def test_settings_override_defaults_to_none(self):
+        req = AccuracyBenchmarkRequest(
+            model_id="test-model",
+            benchmarks={"mmlu": 100},
+        )
+        assert req.settings_override is None
+
+    def test_settings_override_accepts_dict(self):
+        req = AccuracyBenchmarkRequest(
+            model_id="test-model",
+            benchmarks={"mmlu": 100},
+            settings_override={"temperature": 0.0, "top_p": 1.0},
+        )
+        assert req.settings_override == {"temperature": 0.0, "top_p": 1.0}
+
 
 class TestQueueAndResults:
     def setup_method(self):

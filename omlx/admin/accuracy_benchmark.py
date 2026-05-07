@@ -10,6 +10,7 @@ Results survive browser close and persist until explicitly reset.
 
 import asyncio
 import logging
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -47,6 +48,10 @@ class AccuracyBenchmarkRequest(BaseModel):
     benchmarks: dict[str, int]  # name -> sample_size (0 = full dataset)
     batch_size: int = 1
     enable_thinking: bool = False
+    # Ephemeral ModelSettings overrides applied for the duration of this run
+    # only. Persisted settings are untouched. None / empty means "use whatever
+    # is on disk". Unknown keys are dropped with a warning by the manager.
+    settings_override: Optional[dict[str, Any]] = None
 
     @field_validator("batch_size")
     @classmethod
@@ -283,7 +288,21 @@ async def run_accuracy_benchmark(
     engine_pool._suppress_ttl = True
     start_time = time.time()
 
+    # Apply per-run setting overrides (from the bench-tab settings panel) for
+    # the duration of this run only. Persisted model_settings.json is
+    # untouched. Engine-init flags are picked up by the model load below;
+    # sampling-class overrides flow through get_settings() into sampling_kwargs.
+    # Entered inside `try:` so any exception during __enter__ is caught by
+    # the existing handlers and the finally block releases cleanly.
+    sm = getattr(engine_pool, "_settings_manager", None)
+    override_ctx = None
+
     try:
+        if sm is not None and request.settings_override:
+            override_ctx = sm.ephemeral_overrides(
+                request.model_id, request.settings_override
+            )
+            override_ctx.__enter__()
         # Phase 1: Unload all models
         loaded_ids = engine_pool.get_loaded_model_ids()
         if loaded_ids:
@@ -499,3 +518,13 @@ async def run_accuracy_benchmark(
     finally:
         # Re-enable TTL auto-unload
         engine_pool._suppress_ttl = False
+        if override_ctx is not None:
+            try:
+                # Pass through the live exception info (if any) so the context
+                # manager sees the same triple Python's `with` would supply.
+                override_ctx.__exit__(*sys.exc_info())
+            except Exception as e:
+                logger.warning(
+                    f"Accuracy benchmark: failed to release ephemeral "
+                    f"overrides for {request.model_id}: {e}"
+                )

@@ -392,6 +392,21 @@
             benchTab: 'throughput',
             benchDropdown: false,
 
+            // ---- Bench-tab inline Run-time Settings panel ----
+            // Mirrors modelSettings shape; ephemeral by default, persists only
+            // when the user clicks Save (or Save as Profile).
+            benchSettingsOpen: false,
+            benchSettings: {},          // hydrated from selected model's persisted settings
+            benchSettingsBaseline: {},  // last-hydrated snapshot for dirty detection / reset
+            benchSettingsSaving: false,
+            benchSettingsRecentlySaved: false, // ~1.5s post-save flag → checkmark in Save button
+            benchSettingsSaveProfileOpen: false,
+            benchSettingsNewProfile: { display_name: '', description: '' },
+            benchSettingsStatus: '',    // transient status line (profile created / errors)
+            benchProfiles: [],          // per-model profiles for benchModelId (loaded on hydrate)
+            benchProfileScope: 'model', // 'preset' | 'global' | 'model'
+            benchActiveProfileName: null,
+
             // Accuracy benchmark state
             accModelId: '',
             accBenchmarks: { mmlu: true, mmlu_pro: false, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: true, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: true, mbpp: false, livecodebench: false, bbq: false, safetybench: false },
@@ -452,6 +467,19 @@
             accShowText: false,
             accCopied: false,
 
+            // ---- Accuracy-tab inline Run-time Settings panel ----
+            accSettingsOpen: false,
+            accSettings: {},
+            accSettingsBaseline: {},
+            accSettingsSaving: false,
+            accSettingsRecentlySaved: false,
+            accSettingsSaveProfileOpen: false,
+            accSettingsNewProfile: { display_name: '', description: '' },
+            accSettingsStatus: '',
+            accProfiles: [],
+            accProfileScope: 'model',
+            accActiveProfileName: null,
+
             async init() {
                 // Apply theme
                 this.applyTheme();
@@ -474,6 +502,15 @@
                 this.$watch('mainTab', (value) => {
                     this.handleMainTabChange(value);
                 });
+
+                // Bench-tab inline settings panels: re-hydrate from server
+                // baseline whenever the selected model changes. Initial hydrate
+                // runs once here so the panel state is well-formed even before
+                // a model is picked.
+                this._panelHydrate('bench');
+                this._panelHydrate('acc');
+                this.$watch('benchModelId', () => this._panelHydrate('bench'));
+                this.$watch('accModelId', () => this._panelHydrate('acc'));
 
                 this.$watch('hfMlxOnly', () => {
                     this.hfRecommended = { trending: [], popular: [] };
@@ -2481,6 +2518,12 @@
                             prompt_lengths: promptLengths,
                             generation_length: 128,
                             batch_sizes: batchSizes,
+                            // Ship inline panel edits as a per-run override.
+                            // null when nothing's been touched, so the run uses
+                            // whatever's persisted in model_settings.json.
+                            settings_override: this.benchSettingsDirty()
+                                ? this._settingsStateToPayload(this.benchSettings)
+                                : null,
                         }),
                     });
 
@@ -2787,6 +2830,12 @@
                             ),
                             batch_size: this.accBatchSize,
                             enable_thinking: this.accEnableThinking,
+                            // Ship inline panel edits as a per-run override.
+                            // null when nothing's been touched, so the run uses
+                            // whatever's persisted in model_settings.json.
+                            settings_override: this.accSettingsDirty()
+                                ? this._settingsStateToPayload(this.accSettings)
+                                : null,
                         }),
                     });
                     if (!resp.ok) {
@@ -4779,5 +4828,452 @@
                     this.msModelDetailLoading = false;
                 }
             },
+
+            // =================================================================
+            // Bench-tab inline Run-time Settings panel.
+            //
+            // Mirrors modelSettings shape and serialization, but binds to
+            // benchSettings / accSettings so edits don't pollute the modal's
+            // form. Edits are ephemeral by default — they ship as a
+            // settings_override on the bench request and revert on the next
+            // model selection. Save / Save-as-Profile reuse the existing
+            // /api/models/{id}/settings and /api/models/{id}/profiles
+            // endpoints used by the modal.
+            // =================================================================
+
+            // Empty/default panel state. Keep aligned with openModelSettings's
+            // assignment to this.modelSettings (dashboard.js:~1525).
+            _emptySettingsState() {
+                return {
+                    model_alias: '',
+                    model_type_override: '',
+                    max_context_window: null,
+                    max_tokens: null,
+                    temperature: null,
+                    top_p: null,
+                    top_k: null,
+                    repetition_penalty: null,
+                    min_p: null,
+                    presence_penalty: null,
+                    force_sampling: false,
+                    enable_thinking: null,
+                    thinking_default: null,
+                    enableThinkingBudget: false,
+                    thinking_budget_tokens: null,
+                    enableToolResultLimit: false,
+                    max_tool_result_tokens: null,
+                    reasoning_parser: '',
+                    ttl_seconds: null,
+                    enableIndexCache: false,
+                    index_cache_freq: null,
+                    turboquant_kv_enabled: false,
+                    turboquant_kv_bits: 4,
+                    specprefill_enabled: false,
+                    specprefill_draft_model: '',
+                    specprefill_keep_pct: '0.2',
+                    specprefill_threshold: null,
+                    dflash_enabled: false,
+                    dflash_draft_model: '',
+                    dflash_draft_quant_bits: '',
+                    dflash_max_ctx: null,
+                    dflash_in_memory_cache: true,
+                    dflash_in_memory_cache_max_entries: 4,
+                    dflash_in_memory_cache_max_gib: 8,
+                    dflash_ssd_cache: false,
+                    dflash_compatible: true,
+                    dflash_compatibility_reason: '',
+                    dflash_ssd_cache_available: false,
+                    mtp_enabled: false,
+                    mtp_compatible: false,
+                    mtp_compatibility_reason: '',
+                    vlm_mtp_enabled: false,
+                    vlm_mtp_draft_model: '',
+                    vlm_mtp_draft_block_size: null,
+                    ctKwargEntries: [],
+                    trust_remote_code: false,
+                };
+            },
+
+            // Build a settings state from a model entry. Mirrors the
+            // assignment in openModelSettings; kept separate to avoid
+            // disturbing the modal's existing flow.
+            _modelToSettingsState(model) {
+                if (!model) return this._emptySettingsState();
+                const settings = model.settings || {};
+                const ctk = settings.chat_template_kwargs || {};
+                const forcedKeys = new Set(settings.forced_ct_kwargs || []);
+                const ctKwargEntries = [];
+                for (const [key, value] of Object.entries(ctk)) {
+                    if (key === 'enable_thinking') {
+                        ctKwargEntries.push({type: 'enable_thinking', value: String(value), force: forcedKeys.has('enable_thinking')});
+                    } else if (key === 'reasoning_effort') {
+                        ctKwargEntries.push({type: 'reasoning_effort', value: String(value), force: forcedKeys.has('reasoning_effort')});
+                    } else {
+                        ctKwargEntries.push({type: 'custom', key, value: String(value), force: forcedKeys.has(key)});
+                    }
+                }
+                const isOcr = OCR_CONFIG_MODEL_TYPES.has(model.config_model_type || '');
+                return {
+                    model_alias: settings.model_alias || '',
+                    model_type_override: settings.model_type_override || '',
+                    max_context_window: settings.max_context_window || null,
+                    max_tokens: settings.max_tokens || null,
+                    temperature: isOcr ? 0.0 : (settings.temperature ?? null),
+                    top_p: settings.top_p ?? null,
+                    top_k: settings.top_k ?? null,
+                    repetition_penalty: settings.repetition_penalty ?? null,
+                    min_p: settings.min_p ?? null,
+                    presence_penalty: settings.presence_penalty ?? null,
+                    force_sampling: settings.force_sampling || false,
+                    enable_thinking: settings.enable_thinking ?? null,
+                    thinking_default: model.thinking_default ?? null,
+                    enableThinkingBudget: !!(settings.thinking_budget_tokens),
+                    thinking_budget_tokens: settings.thinking_budget_tokens || null,
+                    enableToolResultLimit: !!(settings.max_tool_result_tokens),
+                    max_tool_result_tokens: settings.max_tool_result_tokens || null,
+                    reasoning_parser: settings.reasoning_parser || '',
+                    ttl_seconds: settings.ttl_seconds ?? null,
+                    enableIndexCache: !!(settings.index_cache_freq),
+                    index_cache_freq: settings.index_cache_freq || null,
+                    turboquant_kv_enabled: settings.turboquant_kv_enabled || false,
+                    turboquant_kv_bits: settings.turboquant_kv_bits || 4,
+                    specprefill_enabled: settings.specprefill_enabled || false,
+                    specprefill_draft_model: settings.specprefill_draft_model || '',
+                    specprefill_keep_pct: settings.specprefill_keep_pct ? String(settings.specprefill_keep_pct) : '0.2',
+                    specprefill_threshold: settings.specprefill_threshold || null,
+                    dflash_enabled: settings.dflash_enabled || false,
+                    dflash_draft_model: settings.dflash_draft_model || '',
+                    dflash_draft_quant_bits: settings.dflash_draft_quant_bits ? String(settings.dflash_draft_quant_bits) : '',
+                    dflash_max_ctx: settings.dflash_max_ctx ?? null,
+                    dflash_in_memory_cache: settings.dflash_in_memory_cache !== false,
+                    dflash_in_memory_cache_max_entries: settings.dflash_in_memory_cache_max_entries || 4,
+                    dflash_in_memory_cache_max_gib: settings.dflash_in_memory_cache_max_bytes
+                        ? Math.round(settings.dflash_in_memory_cache_max_bytes / (1024 ** 3))
+                        : 8,
+                    dflash_ssd_cache: settings.dflash_ssd_cache || false,
+                    dflash_compatible: model.dflash_compatible !== false,
+                    dflash_compatibility_reason: model.dflash_compatibility_reason || '',
+                    dflash_ssd_cache_available: !!model.dflash_ssd_cache_available,
+                    mtp_enabled: settings.mtp_enabled || false,
+                    mtp_compatible: model.mtp_compatible === true,
+                    mtp_compatibility_reason: model.mtp_compatibility_reason || '',
+                    vlm_mtp_enabled: settings.vlm_mtp_enabled || false,
+                    vlm_mtp_draft_model: settings.vlm_mtp_draft_model || '',
+                    vlm_mtp_draft_block_size: settings.vlm_mtp_draft_block_size ?? null,
+                    ctKwargEntries,
+                    trust_remote_code: settings.trust_remote_code || false,
+                };
+            },
+
+            // Convert a settings state object back to the wire payload used
+            // by both PUT /api/models/{id}/settings (full save) and the bench
+            // request body's settings_override. Mirrors saveModelSettings's
+            // IIFE (dashboard.js:~1582). Kept separate so changes to the
+            // modal don't quietly affect bench overrides.
+            _settingsStateToPayload(s) {
+                const chatTemplateKwargs = {};
+                const forcedCtKwargs = [];
+                for (const entry of (s.ctKwargEntries || [])) {
+                    if (entry.type === 'enable_thinking') {
+                        chatTemplateKwargs.enable_thinking = entry.value === 'true';
+                        if (entry.force) forcedCtKwargs.push('enable_thinking');
+                    } else if (entry.type === 'reasoning_effort') {
+                        chatTemplateKwargs.reasoning_effort = entry.value;
+                        if (entry.force) forcedCtKwargs.push('reasoning_effort');
+                    } else if (entry.type === 'custom' && entry.key && entry.key.trim()) {
+                        let val = entry.value;
+                        if (val === 'true') val = true;
+                        else if (val === 'false') val = false;
+                        else if (typeof val === 'string' && val.trim() !== '' && !isNaN(Number(val))) val = Number(val);
+                        const key = entry.key.trim();
+                        chatTemplateKwargs[key] = val;
+                        if (entry.force) forcedCtKwargs.push(key);
+                    }
+                }
+                return {
+                    model_alias: s.model_alias?.trim() || null,
+                    model_type_override: s.model_type_override || null,
+                    max_context_window: s.max_context_window || null,
+                    max_tokens: s.max_tokens || null,
+                    temperature: Number.isFinite(s.temperature) ? s.temperature : null,
+                    top_p: Number.isFinite(s.top_p) ? s.top_p : null,
+                    top_k: Number.isFinite(s.top_k) ? s.top_k : null,
+                    repetition_penalty: Number.isFinite(s.repetition_penalty) ? s.repetition_penalty : null,
+                    min_p: Number.isFinite(s.min_p) ? s.min_p : null,
+                    presence_penalty: Number.isFinite(s.presence_penalty) ? s.presence_penalty : null,
+                    force_sampling: s.force_sampling,
+                    reasoning_parser: s.reasoning_parser || null,
+                    ttl_seconds: s.ttl_seconds || null,
+                    index_cache_freq: s.enableIndexCache ? (s.index_cache_freq || 4) : 0,
+                    enable_thinking: s.enable_thinking,
+                    thinking_budget_enabled: s.enableThinkingBudget,
+                    thinking_budget_tokens: s.enableThinkingBudget ? (s.thinking_budget_tokens || null) : 0,
+                    max_tool_result_tokens: s.enableToolResultLimit ? (s.max_tool_result_tokens || null) : 0,
+                    chat_template_kwargs: Object.keys(chatTemplateKwargs).length > 0 ? chatTemplateKwargs : null,
+                    forced_ct_kwargs: forcedCtKwargs.length > 0 ? forcedCtKwargs : null,
+                    turboquant_kv_enabled: s.turboquant_kv_enabled,
+                    turboquant_kv_bits: s.turboquant_kv_enabled ? (parseFloat(s.turboquant_kv_bits) || 4) : 4,
+                    specprefill_enabled: s.specprefill_enabled,
+                    specprefill_draft_model: s.specprefill_draft_model || null,
+                    specprefill_keep_pct: s.specprefill_enabled ? (parseFloat(s.specprefill_keep_pct) || 0.2) : null,
+                    specprefill_threshold: s.specprefill_enabled ? (s.specprefill_threshold || null) : null,
+                    dflash_enabled: s.dflash_enabled,
+                    dflash_draft_model: s.dflash_draft_model || null,
+                    dflash_draft_quant_bits: s.dflash_enabled && s.dflash_draft_quant_bits ? parseInt(s.dflash_draft_quant_bits) : null,
+                    dflash_max_ctx: s.dflash_enabled && s.dflash_max_ctx ? parseInt(s.dflash_max_ctx) : null,
+                    dflash_in_memory_cache: s.dflash_enabled ? !!s.dflash_in_memory_cache : true,
+                    dflash_in_memory_cache_max_entries: s.dflash_enabled
+                        ? (parseInt(s.dflash_in_memory_cache_max_entries) || 4)
+                        : 4,
+                    dflash_in_memory_cache_max_bytes: s.dflash_enabled
+                        ? Math.max(1, parseInt(s.dflash_in_memory_cache_max_gib) || 8) * (1024 ** 3)
+                        : 8 * (1024 ** 3),
+                    dflash_ssd_cache: s.dflash_enabled
+                        && !!s.dflash_in_memory_cache
+                        && !!s.dflash_ssd_cache_available
+                        && !!s.dflash_ssd_cache,
+                    mtp_enabled: !!s.mtp_enabled,
+                    vlm_mtp_enabled: !!s.vlm_mtp_enabled,
+                    vlm_mtp_draft_model: s.vlm_mtp_enabled
+                        ? (s.vlm_mtp_draft_model || null)
+                        : null,
+                    vlm_mtp_draft_block_size: s.vlm_mtp_enabled && s.vlm_mtp_draft_block_size
+                        ? parseInt(s.vlm_mtp_draft_block_size)
+                        : null,
+                    trust_remote_code: !!s.trust_remote_code,
+                };
+            },
+
+            // Engine-init-class fields. Toggling these requires the engine
+            // to be reloaded. Both bench tabs reload the model on every run
+            // so it costs nothing here, but we surface a hint in the panel.
+            _ENGINE_INIT_KEYS: [
+                'turboquant_kv_enabled', 'turboquant_kv_bits',
+                'dflash_enabled', 'dflash_draft_model', 'dflash_draft_quant_bits',
+                'dflash_max_ctx', 'dflash_in_memory_cache',
+                'dflash_in_memory_cache_max_entries',
+                'dflash_in_memory_cache_max_gib', 'dflash_ssd_cache',
+                'specprefill_enabled', 'specprefill_draft_model',
+                'specprefill_keep_pct', 'specprefill_threshold',
+                'mtp_enabled',
+                'vlm_mtp_enabled', 'vlm_mtp_draft_model', 'vlm_mtp_draft_block_size',
+                'enableIndexCache', 'index_cache_freq',
+                'reasoning_parser', 'model_type_override', 'trust_remote_code',
+            ],
+
+            // Generic panel ops keyed by prefix ('bench' | 'acc'). Each tab
+            // exposes thin wrappers below for templates to call by name.
+            _panelHydrate(prefix) {
+                const modelIdField = prefix === 'bench' ? 'benchModelId' : 'accModelId';
+                const modelId = this[modelIdField];
+                const model = (this.models || []).find(m => m.id === modelId) || null;
+                const state = this._modelToSettingsState(model);
+                this[prefix + 'Settings'] = state;
+                this[prefix + 'SettingsBaseline'] = JSON.parse(JSON.stringify(state));
+                this[prefix + 'SettingsStatus'] = '';
+                this[prefix + 'SettingsSaveProfileOpen'] = false;
+                // Echo modal's "active profile" tracking so the matching pill
+                // can render highlighted when the bench model has one set.
+                this[prefix + 'ActiveProfileName'] = (model && model.settings &&
+                    model.settings.active_profile_name) || null;
+
+                // Pull the model's profile list so the pills row can render.
+                // Templates + presets are shared globals already loaded at init().
+                this[prefix + 'Profiles'] = [];
+                if (modelId) {
+                    fetch(`/admin/api/models/${encodeURIComponent(modelId)}/profiles`)
+                        .then(r => r.ok ? r.json() : null)
+                        .then(data => {
+                            if (data && this[modelIdField] === modelId) {
+                                this[prefix + 'Profiles'] = data.profiles || [];
+                            }
+                        })
+                        .catch(e => console.error(`Failed to load ${prefix} profiles:`, e));
+                }
+            },
+            _panelDirty(prefix) {
+                const cur = this[prefix + 'Settings'];
+                const base = this[prefix + 'SettingsBaseline'];
+                if (!cur || !base) return false;
+                return JSON.stringify(cur) !== JSON.stringify(base);
+            },
+            _panelRequiresReload(prefix) {
+                const cur = this[prefix + 'Settings'];
+                const base = this[prefix + 'SettingsBaseline'];
+                if (!cur || !base) return false;
+                for (const k of this._ENGINE_INIT_KEYS) {
+                    if (JSON.stringify(cur[k]) !== JSON.stringify(base[k])) return true;
+                }
+                return false;
+            },
+            _panelReset(prefix) {
+                this[prefix + 'Settings'] = JSON.parse(JSON.stringify(this[prefix + 'SettingsBaseline']));
+                this[prefix + 'SettingsStatus'] = '';
+            },
+            async _panelSave(prefix) {
+                const modelIdField = prefix === 'bench' ? 'benchModelId' : 'accModelId';
+                const modelId = this[modelIdField];
+                if (!modelId) return;
+                this[prefix + 'SettingsSaving'] = true;
+                this[prefix + 'SettingsStatus'] = '';
+                try {
+                    const payload = this._settingsStateToPayload(this[prefix + 'Settings']);
+                    const response = await fetch(
+                        `/admin/api/models/${encodeURIComponent(modelId)}/settings`,
+                        { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(payload) }
+                    );
+                    if (response.ok) {
+                        await this.loadModels();
+                        // Re-hydrate baseline from the refreshed model entry so
+                        // dirty flips back to false after a successful save.
+                        this._panelHydrate(prefix);
+                        this[prefix + 'SettingsRecentlySaved'] = true;
+                        setTimeout(() => {
+                            this[prefix + 'SettingsRecentlySaved'] = false;
+                        }, 1500);
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this[prefix + 'SettingsStatus'] = data.detail || 'Save failed.';
+                    }
+                } catch (err) {
+                    console.error(`Failed to save ${prefix} settings:`, err);
+                    this[prefix + 'SettingsStatus'] = `Save failed: ${err.message}`;
+                } finally {
+                    this[prefix + 'SettingsSaving'] = false;
+                }
+            },
+            _panelSaveAsProfile(prefix) {
+                const modelIdField = prefix === 'bench' ? 'benchModelId' : 'accModelId';
+                if (!this[modelIdField]) return;
+                this[prefix + 'SettingsNewProfile'] = { display_name: '', description: '' };
+                this[prefix + 'SettingsSaveProfileOpen'] = true;
+                this[prefix + 'SettingsStatus'] = '';
+            },
+            async _panelSaveAsProfileConfirm(prefix) {
+                const modelIdField = prefix === 'bench' ? 'benchModelId' : 'accModelId';
+                const modelId = this[modelIdField];
+                const np = this[prefix + 'SettingsNewProfile'];
+                if (!modelId || !np?.display_name?.trim()) return;
+                const autoId = 'p-' + Date.now().toString(36) + '-' +
+                               Math.random().toString(36).slice(2, 6);
+                // formValuesForProfile() reads this.modelSettings; aim it at
+                // the panel state for one call, then restore. Avoids
+                // re-implementing the chat_template_kwargs flattening logic.
+                const savedMs = this.modelSettings;
+                this.modelSettings = this[prefix + 'Settings'];
+                let profileSettings;
+                try {
+                    profileSettings = this.formValuesForProfile();
+                } finally {
+                    this.modelSettings = savedMs;
+                }
+                const body = {
+                    name: autoId,
+                    display_name: np.display_name.trim(),
+                    description: np.description?.trim() || null,
+                    settings: profileSettings,
+                    also_save_as_template: false,
+                };
+                try {
+                    const r = await fetch(
+                        `/admin/api/models/${encodeURIComponent(modelId)}/profiles`,
+                        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(body) }
+                    );
+                    if (r.ok) {
+                        this[prefix + 'SettingsSaveProfileOpen'] = false;
+                        this[prefix + 'SettingsStatus'] = `Profile "${np.display_name.trim()}" created.`;
+                        // Refresh the panel's profile list so the new pill
+                        // shows up immediately. Don't re-hydrate everything;
+                        // just refetch the profiles for this model.
+                        try {
+                            const pr = await fetch(`/admin/api/models/${encodeURIComponent(modelId)}/profiles`);
+                            if (pr.ok) {
+                                const pd = await pr.json();
+                                this[prefix + 'Profiles'] = pd.profiles || [];
+                            }
+                        } catch (_) { /* non-fatal */ }
+                    } else if (r.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await r.json().catch(() => ({}));
+                        this[prefix + 'SettingsStatus'] = data.detail || 'Profile save failed.';
+                    }
+                } catch (e) {
+                    this[prefix + 'SettingsStatus'] = String(e);
+                }
+            },
+
+            // Apply a profile / template / preset to the panel state. We
+            // temporarily aim this.modelSettings at the panel state so the
+            // existing applyProfileToForm / applyTemplateToForm /
+            // applyPresetToForm helpers (which mutate this.modelSettings in
+            // place) work unchanged. The helpers are synchronous mutations
+            // that operate on the same object reference, so the swap is safe.
+            async _panelApplyProfile(prefix, profile) {
+                const savedMs = this.modelSettings;
+                this.modelSettings = this[prefix + 'Settings'];
+                try {
+                    await this.applyProfileToForm(profile);
+                } finally {
+                    this.modelSettings = savedMs;
+                }
+                this[prefix + 'ActiveProfileName'] = profile.name;
+                this[prefix + 'SettingsStatus'] = `Applied profile "${profile.display_name || profile.name}".`;
+            },
+            async _panelApplyTemplate(prefix, template) {
+                const savedMs = this.modelSettings;
+                this.modelSettings = this[prefix + 'Settings'];
+                try {
+                    await this.applyTemplateToForm(template);
+                } finally {
+                    this.modelSettings = savedMs;
+                }
+                // Templates aren't profiles — clear the active-profile highlight.
+                this[prefix + 'ActiveProfileName'] = null;
+                this[prefix + 'SettingsStatus'] = `Applied template "${template.display_name || template.name}".`;
+            },
+            _panelApplyPreset(prefix, preset) {
+                const savedMs = this.modelSettings;
+                this.modelSettings = this[prefix + 'Settings'];
+                try {
+                    this.applyPresetToForm(preset);
+                } finally {
+                    this.modelSettings = savedMs;
+                }
+                this[prefix + 'ActiveProfileName'] = null;
+                this[prefix + 'SettingsStatus'] = `Applied preset "${preset.display_name || preset.name}".`;
+            },
+
+            // ---- Bench (throughput) tab — template-facing API ----
+            get benchSelectedModel() {
+                return (this.models || []).find(m => m.id === this.benchModelId) || null;
+            },
+            benchSettingsDirty() { return this._panelDirty('bench'); },
+            benchSettingsRequiresReload() { return this._panelRequiresReload('bench'); },
+            benchSettingsReset() { this._panelReset('bench'); },
+            benchSettingsSave() { return this._panelSave('bench'); },
+            benchSettingsSaveAsProfile() { this._panelSaveAsProfile('bench'); },
+            benchSettingsSaveAsProfileConfirm() { return this._panelSaveAsProfileConfirm('bench'); },
+            benchApplyProfile(p) { return this._panelApplyProfile('bench', p); },
+            benchApplyTemplate(t) { return this._panelApplyTemplate('bench', t); },
+            benchApplyPreset(p) { this._panelApplyPreset('bench', p); },
+
+            // ---- Accuracy tab — template-facing API ----
+            get accSelectedModel() {
+                return (this.models || []).find(m => m.id === this.accModelId) || null;
+            },
+            accSettingsDirty() { return this._panelDirty('acc'); },
+            accSettingsRequiresReload() { return this._panelRequiresReload('acc'); },
+            accSettingsReset() { this._panelReset('acc'); },
+            accSettingsSave() { return this._panelSave('acc'); },
+            accSettingsSaveAsProfile() { this._panelSaveAsProfile('acc'); },
+            accSettingsSaveAsProfileConfirm() { return this._panelSaveAsProfileConfirm('acc'); },
+            accApplyProfile(p) { return this._panelApplyProfile('acc', p); },
+            accApplyTemplate(t) { return this._panelApplyTemplate('acc', t); },
+            accApplyPreset(p) { this._panelApplyPreset('acc', p); },
         }
     }

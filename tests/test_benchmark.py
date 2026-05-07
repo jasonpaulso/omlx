@@ -84,6 +84,29 @@ class TestBenchmarkRequest:
         )
         assert req.generation_length == 128
 
+    def test_settings_override_defaults_to_none(self):
+        req = BenchmarkRequest(
+            model_id="test-model",
+            prompt_lengths=[1024],
+        )
+        assert req.settings_override is None
+
+    def test_settings_override_accepts_dict(self):
+        req = BenchmarkRequest(
+            model_id="test-model",
+            prompt_lengths=[1024],
+            settings_override={
+                "temperature": 0.1,
+                "turboquant_kv_enabled": True,
+                "turboquant_kv_bits": 4,
+            },
+        )
+        assert req.settings_override == {
+            "temperature": 0.1,
+            "turboquant_kv_enabled": True,
+            "turboquant_kv_bits": 4,
+        }
+
 
 # =============================================================================
 # Prompt generation tests

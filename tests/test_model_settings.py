@@ -469,3 +469,227 @@ class TestModelSettingsManager:
                 t.join()
 
             assert len(errors) == 0
+
+
+class TestEphemeralOverrides:
+    """Tests for ModelSettingsManager.ephemeral_overrides context manager.
+
+    The override layer is the foundation of the bench-tab inline settings
+    panel: it lets a benchmark run apply per-run overrides without writing
+    to model_settings.json.
+    """
+
+    def test_noop_when_overrides_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            with manager.ephemeral_overrides("m", None):
+                assert manager.get_settings("m").temperature == 0.5
+            with manager.ephemeral_overrides("m", {}):
+                assert manager.get_settings("m").temperature == 0.5
+
+    def test_overrides_apply_inside_and_revert_after(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5, top_p=0.9))
+
+            with manager.ephemeral_overrides("m", {"temperature": 0.1}):
+                s = manager.get_settings("m")
+                assert s.temperature == 0.1
+                # Untouched fields keep persisted values.
+                assert s.top_p == 0.9
+
+            after = manager.get_settings("m")
+            assert after.temperature == 0.5
+            assert after.top_p == 0.9
+
+    def test_persisted_file_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+            settings_path = Path(tmpdir) / "model_settings.json"
+            before = settings_path.read_text()
+
+            with manager.ephemeral_overrides(
+                "m", {"temperature": 0.1, "top_p": 0.7}
+            ):
+                pass
+
+            assert settings_path.read_text() == before
+
+    def test_overrides_apply_to_model_with_no_persisted_settings(self):
+        """Engine-init flag overrides should work even for fresh models."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+
+            with manager.ephemeral_overrides(
+                "fresh", {"turboquant_kv_enabled": True, "turboquant_kv_bits": 4}
+            ):
+                s = manager.get_settings("fresh")
+                assert s.turboquant_kv_enabled is True
+                assert s.turboquant_kv_bits == 4
+
+            # And the manager has no persisted state for this model.
+            assert manager.get_settings("fresh").turboquant_kv_enabled is False
+
+    def test_unknown_keys_dropped(self, caplog):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            with caplog.at_level("WARNING"):
+                with manager.ephemeral_overrides(
+                    "m", {"temperature": 0.1, "totally_made_up_key": 42}
+                ):
+                    s = manager.get_settings("m")
+                    assert s.temperature == 0.1
+                    assert not hasattr(s, "totally_made_up_key")
+
+            assert any("totally_made_up_key" in r.message for r in caplog.records)
+
+    def test_none_value_defers_to_lower_layer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            with manager.ephemeral_overrides("m", {"temperature": None}):
+                # None means "don't override this field" — persisted wins.
+                assert manager.get_settings("m").temperature == 0.5
+
+    def test_nested_overrides_inner_wins_then_outer_restored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            with manager.ephemeral_overrides("m", {"temperature": 0.2}):
+                assert manager.get_settings("m").temperature == 0.2
+                with manager.ephemeral_overrides("m", {"temperature": 0.1}):
+                    assert manager.get_settings("m").temperature == 0.1
+                # After inner exits, outer override is back in effect.
+                assert manager.get_settings("m").temperature == 0.2
+            # After outer exits, persisted wins.
+            assert manager.get_settings("m").temperature == 0.5
+
+    def test_out_of_order_exit_uses_token(self):
+        """Two overlapping overrides exited out of LIFO order shouldn't corrupt state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            outer = manager.ephemeral_overrides("m", {"temperature": 0.2})
+            inner = manager.ephemeral_overrides("m", {"temperature": 0.1})
+            outer.__enter__()
+            inner.__enter__()
+            assert manager.get_settings("m").temperature == 0.1
+
+            # Exit outer first (out of LIFO order).
+            outer.__exit__(None, None, None)
+            # Inner is still active, so its temperature wins.
+            assert manager.get_settings("m").temperature == 0.1
+
+            inner.__exit__(None, None, None)
+            assert manager.get_settings("m").temperature == 0.5
+
+    def test_overrides_released_on_exception(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(temperature=0.5))
+
+            with pytest.raises(RuntimeError):
+                with manager.ephemeral_overrides("m", {"temperature": 0.1}):
+                    assert manager.get_settings("m").temperature == 0.1
+                    raise RuntimeError("boom")
+
+            assert manager.get_settings("m").temperature == 0.5
+            # Internal stack is empty.
+            assert "m" not in manager._overrides
+
+    def test_overrides_isolated_per_model(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("a", ModelSettings(temperature=0.5))
+            manager.set_settings("b", ModelSettings(temperature=0.7))
+
+            with manager.ephemeral_overrides("a", {"temperature": 0.1}):
+                assert manager.get_settings("a").temperature == 0.1
+                # Overrides for "a" don't leak into "b".
+                assert manager.get_settings("b").temperature == 0.7
+
+    def test_engine_init_flag_overrides(self):
+        """TurboQuant/DFlash/MTP overrides should compose just like sampling."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(turboquant_kv_enabled=False))
+
+            with manager.ephemeral_overrides(
+                "m",
+                {
+                    "turboquant_kv_enabled": True,
+                    "turboquant_kv_bits": 3,
+                    "dflash_enabled": True,
+                },
+            ):
+                s = manager.get_settings("m")
+                assert s.turboquant_kv_enabled is True
+                assert s.turboquant_kv_bits == 3
+                assert s.dflash_enabled is True
+
+            after = manager.get_settings("m")
+            assert after.turboquant_kv_enabled is False
+            assert after.dflash_enabled is False
+
+    def test_override_respects_mutual_exclusion_constraints(self):
+        """ModelSettings rejects mtp_enabled=True with dflash_enabled=True.
+
+        get_settings runs the merged dict through ModelSettings.from_dict,
+        which triggers __post_init__ validation. An override that creates
+        an invalid combination should surface as an exception from
+        get_settings — not silently succeed with a corrupted state.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            manager.set_settings("m", ModelSettings(mtp_enabled=True))
+
+            # Override turns on dflash_enabled while persisted has
+            # mtp_enabled=True — invalid combo per ModelSettings.__post_init__.
+            with manager.ephemeral_overrides("m", {"dflash_enabled": True}):
+                with pytest.raises(Exception):
+                    manager.get_settings("m")
+
+            # Override is still released after the exception path.
+            assert "m" not in manager._overrides
+
+    def test_thread_safe_concurrent_overrides(self):
+        """Concurrent overrides on different models don't corrupt each other."""
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = ModelSettingsManager(Path(tmpdir))
+            errors: list[Exception] = []
+
+            def worker(model_id: str, target_temp: float) -> None:
+                try:
+                    for _ in range(20):
+                        with manager.ephemeral_overrides(
+                            model_id, {"temperature": target_temp}
+                        ):
+                            assert (
+                                manager.get_settings(model_id).temperature
+                                == target_temp
+                            )
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [
+                threading.Thread(target=worker, args=(f"m{i}", i / 10))
+                for i in range(8)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert errors == []
+            # All override stacks released.
+            assert manager._overrides == {}

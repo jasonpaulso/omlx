@@ -129,33 +129,80 @@
             }
 
             function replaceIcon(el) {
-                var name = el.getAttribute('data-lucide');
-                if (!name) return;
-                var def = lucide.icons[toPascal(name)];
-                if (!def) return;
-                var svg = lucide.createElement(def);
-                Array.from(el.attributes).forEach(function(a) {
-                    if (a.name !== 'data-lucide') svg.setAttribute(a.name, a.value);
-                });
-                svg.classList.add('lucide', 'lucide-' + name);
-                if (el.parentNode) el.parentNode.replaceChild(svg, el);
+                // Per-icon try/catch: a single failure must NOT abort the rest
+                // of the pass (forEach does not isolate iteration exceptions,
+                // so one throw here previously left every later <i data-lucide>
+                // unprocessed — a second-tab regression).
+                try {
+                    var name = el.getAttribute('data-lucide');
+                    if (!name) return;
+                    var def = lucide.icons[toPascal(name)];
+                    if (!def) return;
+                    var svg = lucide.createElement(def);
+                    Array.from(el.attributes).forEach(function(a) {
+                        if (a.name !== 'data-lucide') svg.setAttribute(a.name, a.value);
+                    });
+                    svg.classList.add('lucide', 'lucide-' + name);
+                    if (el.parentNode) el.parentNode.replaceChild(svg, el);
+                } catch (e) {
+                    if (window.console && console.warn) {
+                        console.warn('lucide: failed to render icon', el, e);
+                    }
+                }
             }
 
             function processAll() {
                 document.querySelectorAll('i[data-lucide]').forEach(replaceIcon);
             }
 
-            // Initial pass
+            // Initial pass.
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', processAll);
             } else {
                 processAll();
             }
 
-            // Poll for dynamically added icons (Alpine x-for, x-if, modals).
-            setInterval(function() {
-                if (document.querySelector('i[data-lucide]')) processAll();
-            }, 300);
+            // MutationObserver replaces the previous 300ms poll. It reacts
+            // immediately to:
+            //   - newly inserted <i data-lucide> nodes (Alpine x-for / x-if,
+            //     modal open, dynamically rendered partials)
+            //   - attribute mutations on existing <i> elements (Alpine
+            //     :data-lucide bindings resolving once the component mounts).
+            // No idle CPU cost, and zero latency between DOM availability and
+            // icon replacement.
+            function startObserving() {
+                var observer = new MutationObserver(function(mutations) {
+                    for (var i = 0; i < mutations.length; i++) {
+                        var m = mutations[i];
+                        if (m.type === 'childList') {
+                            m.addedNodes.forEach(function(node) {
+                                if (node.nodeType !== 1) return;
+                                if (node.matches && node.matches('i[data-lucide]')) {
+                                    replaceIcon(node);
+                                }
+                                if (node.querySelectorAll) {
+                                    node.querySelectorAll('i[data-lucide]').forEach(replaceIcon);
+                                }
+                            });
+                        } else if (m.type === 'attributes' &&
+                                   m.attributeName === 'data-lucide' &&
+                                   m.target.tagName === 'I') {
+                            replaceIcon(m.target);
+                        }
+                    }
+                });
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['data-lucide']
+                });
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startObserving);
+            } else {
+                startObserving();
+            }
         })();
     </script>
 

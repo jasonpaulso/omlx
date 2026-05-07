@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +44,11 @@ class BenchmarkRequest(BaseModel):
     prompt_lengths: list[int]
     generation_length: int = 128
     batch_sizes: list[int] = []
+    # Ephemeral ModelSettings overrides applied for the duration of this run
+    # only. Persisted settings are untouched. None / empty means "use whatever
+    # is on disk". Unknown keys are dropped with a warning by the manager.
+    settings_override: Optional[dict[str, Any]] = None
+
     @field_validator("prompt_lengths")
     @classmethod
     def validate_prompt_lengths(cls, v: list[int]) -> list[int]:
@@ -644,11 +650,28 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
     current_test = 0
     overall_start = time.perf_counter()
 
+    # Apply per-run setting overrides (from the bench-tab settings panel) for
+    # the duration of this run only. Persisted model_settings.json is untouched.
+    # Engine-init flags (TurboQuant/DFlash/MTP/...) are picked up because
+    # Phase 2 reloads the model. We enter the context manually inside `try:`
+    # (not via `with`) so the existing try/except body below stays unchanged;
+    # the matching `finally` at the bottom releases it. Entering inside the
+    # try means an exception during __enter__ is caught by the existing
+    # handlers — no leaked override token.
+    sm = getattr(engine_pool, "_settings_manager", None)
+    override_ctx = None
+
     try:
+        if sm is not None and request.settings_override:
+            override_ctx = sm.ephemeral_overrides(
+                request.model_id, request.settings_override
+            )
+            override_ctx.__enter__()
         # Snapshot experimental flags at run start. Settings can change mid-run
         # (user toggling DFlash/SpecPrefill/TurboQuant), and the produced
         # numbers are tied to whatever was active when generation actually ran.
-        sm = getattr(engine_pool, "_settings_manager", None)
+        # With an override active this reflects the merged view, so
+        # override-induced experimental flags also block omlx.ai upload.
         if sm is not None:
             try:
                 s = sm.get_settings(request.model_id)
@@ -860,3 +883,15 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
             await engine_pool._unload_engine(request.model_id)
         except Exception:
             pass
+
+    finally:
+        if override_ctx is not None:
+            try:
+                # Pass through the live exception info (if any) so the context
+                # manager sees the same triple Python's `with` would supply.
+                override_ctx.__exit__(*sys.exc_info())
+            except Exception as e:
+                logger.warning(
+                    f"Benchmark: failed to release ephemeral overrides for "
+                    f"{request.model_id}: {e}"
+                )

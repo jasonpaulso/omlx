@@ -39,6 +39,21 @@
     <!-- Model Settings Modal -->
     {% include "dashboard/_modal_model_settings.html" %}
 
+    <!-- Run-time Settings Modals (one per bench tab) -->
+    {% from "dashboard/_modal_bench_settings.html" import bench_settings_modal %}
+    {{ bench_settings_modal(
+        'bench',
+        run_fn='startBenchmark()',
+        run_disabled_expr='!benchModelId || Object.values(benchPromptLengths).every(v => !v) || benchRunning',
+        placeholder='e.g. low-temp-deterministic'
+    ) }}
+    {{ bench_settings_modal(
+        'acc',
+        run_fn='addToAccQueue()',
+        run_disabled_expr='!accModelId || !Object.values(accBenchmarks).some(v => v) || accRunning',
+        placeholder='e.g. high-recall-mmlu'
+    ) }}
+
     <!-- HF Mirror Settings Modal -->
     <div x-show="showHfMirrorModal" x-cloak
          class="fixed inset-0 z-50 overflow-y-auto"

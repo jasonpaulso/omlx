@@ -5,13 +5,14 @@ per-model configuration settings, including sampling parameters, pinned/default
 flags, and metadata.
 """
 
+import contextlib
 import copy
 import json
 import logging
 import threading
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from .model_profiles import (
     filter_profile_fields,
@@ -266,6 +267,11 @@ class ModelSettingsManager:
         self._settings: Dict[str, ModelSettings] = {}
         self._profiles: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._templates: Dict[str, Dict[str, Any]] = {}
+        # Ephemeral override layers keyed by model_id. Each value is a list of
+        # (token, override_dict) tuples; later entries win during merge.
+        # Tokens identify which entry to pop on exit so out-of-order context
+        # managers don't corrupt each other's state.
+        self._overrides: Dict[str, list[tuple[object, Dict[str, Any]]]] = {}
 
         # Ensure base directory exists
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -346,6 +352,11 @@ class ModelSettingsManager:
     def get_settings(self, model_id: str) -> ModelSettings:
         """Get settings for a specific model.
 
+        Returns persisted settings merged with any active ephemeral overrides
+        from ``ephemeral_overrides``. Override layers stack (later wins), and
+        a key set to ``None`` in an override is treated as "use the layer
+        beneath this one" so callers can express "don't touch this field".
+
         Args:
             model_id: The model identifier.
 
@@ -354,11 +365,67 @@ class ModelSettingsManager:
         """
         with self._lock:
             if model_id in self._settings:
-                # Return a copy to prevent external modification
-                settings = self._settings[model_id]
-                return ModelSettings.from_dict(settings.to_dict())
+                base = self._settings[model_id].to_dict()
+            else:
+                base = ModelSettings().to_dict()
 
-            return ModelSettings()
+            for _token, layer in self._overrides.get(model_id, ()):
+                for key, value in layer.items():
+                    if value is None:
+                        continue
+                    base[key] = value
+
+            return ModelSettings.from_dict(base)
+
+    @contextlib.contextmanager
+    def ephemeral_overrides(
+        self, model_id: str, overrides: Optional[Dict[str, Any]]
+    ) -> Iterator[None]:
+        """Apply overrides on top of persisted settings for ``model_id``.
+
+        Inside the ``with`` block, ``get_settings(model_id)`` returns the
+        persisted settings shallow-merged with ``overrides`` (override values
+        win, except ``None`` which defers to the layer beneath). On exit —
+        normal or via exception — the overrides are removed.
+
+        Unknown keys (i.e. not fields of :class:`ModelSettings`) are dropped
+        with a warning. Stacking is supported; exits are matched by token, so
+        out-of-order exits are safe.
+
+        Yields ``None`` for use as a context manager. When ``overrides`` is
+        ``None`` or empty the context is a no-op.
+        """
+        if not overrides:
+            yield
+            return
+
+        valid_keys = {f.name for f in fields(ModelSettings)}
+        unknown = [k for k in overrides if k not in valid_keys]
+        if unknown:
+            logger.warning(
+                f"ephemeral_overrides: dropping unknown keys for "
+                f"'{model_id}': {unknown}"
+            )
+        cleaned = {k: v for k, v in overrides.items() if k in valid_keys}
+        if not cleaned:
+            yield
+            return
+
+        token = object()
+        with self._lock:
+            self._overrides.setdefault(model_id, []).append((token, cleaned))
+
+        try:
+            yield
+        finally:
+            with self._lock:
+                stack = self._overrides.get(model_id)
+                if stack is not None:
+                    self._overrides[model_id] = [
+                        entry for entry in stack if entry[0] is not token
+                    ]
+                    if not self._overrides[model_id]:
+                        del self._overrides[model_id]
 
     def set_settings(self, model_id: str, settings: ModelSettings) -> None:
         """Set settings for a specific model.

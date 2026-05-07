@@ -59,6 +59,15 @@
                                 <i data-lucide="settings-2" class="w-4 h-4 text-neutral-500"></i>
                                 <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">{{ t('bench.config.section_label') }}</span>
                             </div>
+                            <button type="button"
+                                    @click="benchSettingsOpen = true"
+                                    :disabled="!benchModelId"
+                                    class="px-3 py-1.5 text-xs font-medium text-neutral-700 bg-white border border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5">
+                                <i data-lucide="sliders" class="w-3.5 h-3.5 text-neutral-500"></i>
+                                <span>Run-time settings</span>
+                                <span x-show="benchSettingsDirty()" x-cloak
+                                      class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold uppercase tracking-wider">modified</span>
+                            </button>
                         </div>
 
                         <div class="px-6 py-5 space-y-5">
