@@ -1239,43 +1239,57 @@
             },
 
             _resetPresetApplicableFields() {
-                // Reset all fields a preset can touch so switching presets does not leave
-                // stale values. Intentionally does NOT touch model_alias / model_type_override
-                // / is_pinned / is_default / turboquant_* / dflash_* / specprefill_* / index_cache_*.
-                const ms = this.modelSettings;
-                ms.temperature = null;
-                ms.top_p = null;
-                ms.top_k = null;
-                ms.min_p = null;
-                ms.repetition_penalty = null;
-                ms.presence_penalty = null;
-                ms.force_sampling = false;
-                ms.max_context_window = null;
-                ms.max_tokens = null;
-                ms.reasoning_parser = null;
-                ms.ttl_seconds = null;
-                ms.enable_thinking = null;
-                ms.enableThinkingBudget = false;
-                ms.thinking_budget_tokens = null;
-                ms.enableToolResultLimit = false;
-                ms.max_tool_result_tokens = null;
-                ms.ctKwargEntries = [];
+                this._resetStatePresetFields(this.modelSettings);
             },
 
-            applyPresetToForm(preset) {
-                // Reset first so previous preset's fields (e.g. presence_penalty) do not stick.
-                this._resetPresetApplicableFields();
-                const s = preset.settings || {};
-                const ms = this.modelSettings;
-                for (const k of Object.keys(s)) {
+            // Pure version of _resetPresetApplicableFields — operates on any
+            // state object (modal's modelSettings, bench's benchSettings,
+            // accuracy's accSettings). Resets all fields a preset can touch
+            // so switching presets does not leave stale values. Intentionally
+            // does NOT touch model_alias / model_type_override / is_pinned /
+            // is_default / turboquant_* / dflash_* / specprefill_* / index_cache_*.
+            _resetStatePresetFields(state) {
+                state.temperature = null;
+                state.top_p = null;
+                state.top_k = null;
+                state.min_p = null;
+                state.repetition_penalty = null;
+                state.presence_penalty = null;
+                state.force_sampling = false;
+                state.max_context_window = null;
+                state.max_tokens = null;
+                state.reasoning_parser = null;
+                state.ttl_seconds = null;
+                state.enable_thinking = null;
+                state.enableThinkingBudget = false;
+                state.thinking_budget_tokens = null;
+                state.enableToolResultLimit = false;
+                state.max_tool_result_tokens = null;
+                state.ctKwargEntries = [];
+            },
+
+            // Pure profile/preset merge helpers — write a settings dict into
+            // a target state object (modal or panel) without touching
+            // selectedModel/activeProfileName or calling the backend.
+            // Modal- and panel-side wrappers add their own side effects
+            // (POSTs, status updates) around these.
+            _mergeProfileSettingsIntoState(state, settings) {
+                const fields = this.profileFields.universal.concat(
+                    this.profileFields.model_specific,
+                );
+                for (const k of fields) {
+                    if (!(k in settings)) continue;
                     if (k === 'thinking_budget_enabled') {
-                        ms.enableThinkingBudget = !!s[k];
+                        state.enableThinkingBudget = !!settings[k];
+                    } else if (k === 'index_cache_freq') {
+                        state.enableIndexCache = !!settings[k];
+                        state.index_cache_freq = settings[k] || null;
                     } else if (k === 'max_tool_result_tokens') {
-                        ms.enableToolResultLimit = s[k] != null;
-                        ms.max_tool_result_tokens = s[k] ?? null;
+                        state.enableToolResultLimit = !!settings[k];
+                        state.max_tool_result_tokens = settings[k] || null;
                     } else if (k === 'chat_template_kwargs' || k === 'forced_ct_kwargs') {
-                        const ctk = s.chat_template_kwargs || {};
-                        const forced = new Set(s.forced_ct_kwargs || []);
+                        const ctk = settings.chat_template_kwargs || {};
+                        const forced = new Set(settings.forced_ct_kwargs || []);
                         const entries = [];
                         for (const [key, value] of Object.entries(ctk)) {
                             if (key === 'enable_thinking') {
@@ -1286,11 +1300,44 @@
                                 entries.push({type:'custom', key, value:String(value), force:forced.has(key)});
                             }
                         }
-                        ms.ctKwargEntries = entries;
+                        state.ctKwargEntries = entries;
                     } else {
-                        ms[k] = s[k];
+                        state[k] = settings[k];
                     }
                 }
+            },
+
+            _mergePresetSettingsIntoState(state, settings) {
+                for (const k of Object.keys(settings)) {
+                    if (k === 'thinking_budget_enabled') {
+                        state.enableThinkingBudget = !!settings[k];
+                    } else if (k === 'max_tool_result_tokens') {
+                        state.enableToolResultLimit = settings[k] != null;
+                        state.max_tool_result_tokens = settings[k] ?? null;
+                    } else if (k === 'chat_template_kwargs' || k === 'forced_ct_kwargs') {
+                        const ctk = settings.chat_template_kwargs || {};
+                        const forced = new Set(settings.forced_ct_kwargs || []);
+                        const entries = [];
+                        for (const [key, value] of Object.entries(ctk)) {
+                            if (key === 'enable_thinking') {
+                                entries.push({type:'enable_thinking', value:String(value), force:forced.has('enable_thinking')});
+                            } else if (key === 'reasoning_effort') {
+                                entries.push({type:'reasoning_effort', value:String(value), force:forced.has('reasoning_effort')});
+                            } else {
+                                entries.push({type:'custom', key, value:String(value), force:forced.has(key)});
+                            }
+                        }
+                        state.ctKwargEntries = entries;
+                    } else {
+                        state[k] = settings[k];
+                    }
+                }
+            },
+
+            applyPresetToForm(preset) {
+                // Reset first so previous preset's fields (e.g. presence_penalty) do not stick.
+                this._resetStatePresetFields(this.modelSettings);
+                this._mergePresetSettingsIntoState(this.modelSettings, preset.settings || {});
                 this.activeProfileName = null;
                 this.profilesDrift = false;
             },
@@ -1341,37 +1388,7 @@
             },
             async applyProfileToForm(profile) {
                 // Merge all profile fields into the form (no server call — user clicks Save to persist).
-                const s = profile.settings || {};
-                const ms = this.modelSettings;
-                for (const k of this.profileFields.universal.concat(this.profileFields.model_specific)) {
-                    if (!(k in s)) continue;
-                    if (k === 'thinking_budget_enabled') {
-                        ms.enableThinkingBudget = !!s[k];
-                    } else if (k === 'index_cache_freq') {
-                        ms.enableIndexCache = !!s[k];
-                        ms.index_cache_freq = s[k] || null;
-                    } else if (k === 'max_tool_result_tokens') {
-                        ms.enableToolResultLimit = !!s[k];
-                        ms.max_tool_result_tokens = s[k] || null;
-                    } else if (k === 'chat_template_kwargs' || k === 'forced_ct_kwargs') {
-                        // Rebuild ctKwargEntries
-                        const ctk = s.chat_template_kwargs || {};
-                        const forced = new Set(s.forced_ct_kwargs || []);
-                        const entries = [];
-                        for (const [key, value] of Object.entries(ctk)) {
-                            if (key === 'enable_thinking') {
-                                entries.push({type:'enable_thinking', value:String(value), force:forced.has('enable_thinking')});
-                            } else if (key === 'reasoning_effort') {
-                                entries.push({type:'reasoning_effort', value:String(value), force:forced.has('reasoning_effort')});
-                            } else {
-                                entries.push({type:'custom', key, value:String(value), force:forced.has(key)});
-                            }
-                        }
-                        ms.ctKwargEntries = entries;
-                    } else {
-                        ms[k] = s[k];
-                    }
-                }
+                this._mergeProfileSettingsIntoState(this.modelSettings, profile.settings || {});
                 // Persist active_profile_name to backend before updating UI state
                 const seq = ++this._applySeq;
                 try {
@@ -5003,7 +5020,9 @@
                     presence_penalty: Number.isFinite(s.presence_penalty) ? s.presence_penalty : null,
                     force_sampling: s.force_sampling,
                     reasoning_parser: s.reasoning_parser || null,
-                    ttl_seconds: s.ttl_seconds || null,
+                    // Preserve explicit 0 (means "no TTL"); only fall to null
+                    // when the value is missing/non-finite.
+                    ttl_seconds: Number.isFinite(s.ttl_seconds) ? s.ttl_seconds : null,
                     index_cache_freq: s.enableIndexCache ? (s.index_cache_freq || 4) : 0,
                     enable_thinking: s.enable_thinking,
                     thinking_budget_enabled: s.enableThinkingBudget,
@@ -5082,13 +5101,30 @@
                 this[prefix + 'Profiles'] = [];
                 if (modelId) {
                     fetch(`/admin/api/models/${encodeURIComponent(modelId)}/profiles`)
-                        .then(r => r.ok ? r.json() : null)
+                        .then(async r => {
+                            // Honor the session-expiry redirect contract used
+                            // elsewhere in the dashboard for /admin/api fetches.
+                            if (r.status === 401) {
+                                window.location.href = '/admin';
+                                return null;
+                            }
+                            if (!r.ok) {
+                                this[prefix + 'SettingsStatus'] =
+                                    `Failed to load profiles (HTTP ${r.status}).`;
+                                return null;
+                            }
+                            return r.json();
+                        })
                         .then(data => {
                             if (data && this[modelIdField] === modelId) {
                                 this[prefix + 'Profiles'] = data.profiles || [];
                             }
                         })
-                        .catch(e => console.error(`Failed to load ${prefix} profiles:`, e));
+                        .catch(e => {
+                            console.error(`Failed to load ${prefix} profiles:`, e);
+                            this[prefix + 'SettingsStatus'] =
+                                `Failed to load profiles: ${e}`;
+                        });
                 }
             },
             _panelDirty(prefix) {
@@ -5207,43 +5243,41 @@
                 }
             },
 
-            // Apply a profile / template / preset to the panel state. We
-            // temporarily aim this.modelSettings at the panel state so the
-            // existing applyProfileToForm / applyTemplateToForm /
-            // applyPresetToForm helpers (which mutate this.modelSettings in
-            // place) work unchanged. The helpers are synchronous mutations
-            // that operate on the same object reference, so the swap is safe.
-            async _panelApplyProfile(prefix, profile) {
-                const savedMs = this.modelSettings;
-                this.modelSettings = this[prefix + 'Settings'];
-                try {
-                    await this.applyProfileToForm(profile);
-                } finally {
-                    this.modelSettings = savedMs;
-                }
+            // Apply a profile / template / preset to the panel state.
+            // These are intentionally ephemeral by default — they mutate
+            // only the panel's state object via pure merge helpers, and
+            // never call applyProfileToForm/applyTemplateToForm (which
+            // POST to /admin/api/models/{selectedModel.id}/...) — those
+            // would target the modal's selectedModel and persist server-
+            // side, breaking the ephemeral-override contract and possibly
+            // hitting the wrong model entirely.
+            _panelApplyProfile(prefix, profile) {
+                this._mergeProfileSettingsIntoState(
+                    this[prefix + 'Settings'],
+                    profile.settings || {},
+                );
                 this[prefix + 'ActiveProfileName'] = profile.name;
                 this[prefix + 'SettingsStatus'] = `Applied profile "${profile.display_name || profile.name}".`;
             },
-            async _panelApplyTemplate(prefix, template) {
-                const savedMs = this.modelSettings;
-                this.modelSettings = this[prefix + 'Settings'];
-                try {
-                    await this.applyTemplateToForm(template);
-                } finally {
-                    this.modelSettings = savedMs;
-                }
+            _panelApplyTemplate(prefix, template) {
+                // Templates carry the same shape as profiles. We merge them
+                // directly into panel state — unlike applyTemplateToForm, we
+                // do NOT create a server-side profile from the template
+                // (that's a write-action the user hasn't asked for from
+                // the bench panels).
+                this._mergeProfileSettingsIntoState(
+                    this[prefix + 'Settings'],
+                    template.settings || {},
+                );
                 // Templates aren't profiles — clear the active-profile highlight.
                 this[prefix + 'ActiveProfileName'] = null;
                 this[prefix + 'SettingsStatus'] = `Applied template "${template.display_name || template.name}".`;
             },
             _panelApplyPreset(prefix, preset) {
-                const savedMs = this.modelSettings;
-                this.modelSettings = this[prefix + 'Settings'];
-                try {
-                    this.applyPresetToForm(preset);
-                } finally {
-                    this.modelSettings = savedMs;
-                }
+                const state = this[prefix + 'Settings'];
+                // Reset first so previous preset's fields don't bleed through.
+                this._resetStatePresetFields(state);
+                this._mergePresetSettingsIntoState(state, preset.settings || {});
                 this[prefix + 'ActiveProfileName'] = null;
                 this[prefix + 'SettingsStatus'] = `Applied preset "${preset.display_name || preset.name}".`;
             },

@@ -9,9 +9,9 @@
                        (e.g. "modelSettings", "benchSettings", "accSettings").
     selected_model   — Alpine expression for the model currently being edited
                        (e.g. "selectedModel", "benchSelectedModel").
-    mode             — "modal" or "panel". Modal-only chrome (the "Load Defaults"
-                       button, the ttlPlaceholder reference) is hidden in panel
-                       mode so the macro doesn't depend on modal-scope helpers.
+    mode             — "modal" or "panel". Modal-only chrome (the
+                       "Load Defaults" button) is hidden in panel mode so the
+                       macro doesn't depend on modal-scope helpers.
 #}
 {% macro settings_fields(state, selected_model='selectedModel', mode='modal') %}
                 <div class="flex flex-col lg:flex-row">
@@ -115,7 +115,7 @@
                                 <div>
                                     <label class="block text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">{{ t('modal.model_settings.ttl_seconds') }}</label>
                                     <input type="number" x-model.number="{{ state }}.ttl_seconds"
-                                           {% if mode == 'modal' %}:placeholder="ttlPlaceholder"{% else %}placeholder="default"{% endif %}
+                                           :placeholder="ttlPlaceholder"
                                            :disabled="{{ selected_model }}?.pinned"
                                            min="0" step="60"
                                            :class="{{ selected_model }}?.pinned ? 'bg-neutral-100 text-neutral-400 cursor-not-allowed' : ''"
