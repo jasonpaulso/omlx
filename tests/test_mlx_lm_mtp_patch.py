@@ -161,6 +161,109 @@ class TestQwen35Model:
         assert hasattr(Model, "_omlx_mtp_patched")
 
 
+class TestQwen35MoeSanitize:
+    """Cover qwen3_5_moe.Model.sanitize for the three MTP weight layouts:
+    fused (Qwen3.6), per-expert (Qwen3.5), and dense (MTPLX). The dense
+    case is the regression guard for the Ornstein3.6 SABER-MTPLX KeyError.
+    """
+
+    @staticmethod
+    def _fake_self(num_hidden_layers=0, mtp_num=1, num_experts=2):
+        """Stand-in for qwen3_5_moe.Model. Sanitize only reads
+        ``self.language_model.args.{num_hidden_layers,mtp_num_hidden_layers,
+        num_experts}`` and tail-calls ``self.language_model.sanitize``."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            language_model=SimpleNamespace(
+                args=SimpleNamespace(
+                    num_hidden_layers=num_hidden_layers,
+                    mtp_num_hidden_layers=mtp_num,
+                    num_experts=num_experts,
+                ),
+                # Identity tail-call so the test inspects the post-MoE
+                # weight dict directly.
+                sanitize=lambda w: w,
+            )
+        )
+
+    def test_dense_mtp_passes_through_without_keyerror(self):
+        """MTPLX-format checkpoints ship a dense MLP at the MTP layer
+        (no ``experts.*`` keys). Sanitize must short-circuit, not attempt
+        to stack non-existent per-expert tensors.
+        """
+        from omlx.patches.mlx_lm_mtp import apply_mlx_lm_mtp_patch
+
+        assert apply_mlx_lm_mtp_patch() is True
+        try:
+            from mlx_lm.models import qwen3_5_moe as moe
+        except ImportError:
+            pytest.skip("mlx_lm.models.qwen3_5_moe not importable")
+
+        # Mirrors samuelfaj/Ornstein3.6-35B-A3B-SABER-6bit-MTPLX-Optimized-Speed
+        # mtp.safetensors key list (dense MLP at the MTP layer).
+        weights = {
+            "mtp.layers.0.mlp.gate_proj.weight": "g",
+            "mtp.layers.0.mlp.up_proj.weight": "u",
+            "mtp.layers.0.mlp.down_proj.weight": "d",
+            "mtp.layers.0.mlp.gate.weight": "router",
+            "mtp.layers.0.mlp.shared_expert.gate_proj.weight": "sg",
+            "mtp.layers.0.mlp.shared_expert.up_proj.weight": "su",
+            "mtp.layers.0.mlp.shared_expert.down_proj.weight": "sd",
+            "mtp.layers.0.mlp.shared_expert_gate.weight": "seg",
+        }
+
+        out = moe.Model.sanitize(self._fake_self(), weights)
+
+        # Dense MTP keys survive untouched (with the ``language_model.``
+        # prefix sanitize prepends to bare keys).
+        assert "language_model.mtp.layers.0.mlp.gate_proj.weight" in out
+        assert (
+            "language_model.mtp.layers.0.mlp.shared_expert.gate_proj.weight"
+            in out
+        )
+        # No bogus switch_mlp keys synthesized for the dense layer.
+        assert (
+            "language_model.mtp.layers.0.mlp.switch_mlp.gate_proj.weight"
+            not in out
+        )
+
+    def test_per_expert_mtp_gets_stacked(self):
+        """Qwen3.5-style per-expert MTP weights must be stacked into the
+        unified ``switch_mlp.{gate,up,down}_proj.weight`` layout.
+        """
+        import mlx.core as mx
+
+        from omlx.patches.mlx_lm_mtp import apply_mlx_lm_mtp_patch
+
+        assert apply_mlx_lm_mtp_patch() is True
+        try:
+            from mlx_lm.models import qwen3_5_moe as moe
+        except ImportError:
+            pytest.skip("mlx_lm.models.qwen3_5_moe not importable")
+
+        # Two experts, three projections each — minimal but exercises stack.
+        weights = {}
+        for e in (0, 1):
+            for n in ("gate_proj", "up_proj", "down_proj"):
+                weights[f"mtp.layers.0.mlp.experts.{e}.{n}.weight"] = mx.zeros(
+                    (4, 8)
+                )
+
+        out = moe.Model.sanitize(self._fake_self(num_experts=2), weights)
+
+        # Per-expert keys consumed.
+        assert (
+            "language_model.mtp.layers.0.mlp.experts.0.gate_proj.weight"
+            not in out
+        )
+        # Unified switch_mlp keys synthesized with experts dim stacked.
+        for n in ("gate_proj", "up_proj", "down_proj"):
+            key = f"language_model.mtp.layers.0.mlp.switch_mlp.{n}.weight"
+            assert key in out
+            assert out[key].shape == (2, 4, 8)
+
+
 class TestDeepseekV4Model:
     def test_skip_when_base_patch_not_applied(self, monkeypatch):
         """deepseek_v4 MTP patch must skip cleanly if the base
