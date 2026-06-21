@@ -419,7 +419,7 @@ INFO_PLIST="$STAGED_APP/Contents/Info.plist"
 
 if [ -d "$ICON_BUNDLE" ] && [ -d "$XCASSETS_DIR" ]; then
     log "Compiling AppIcon.icon via actool…"
-    ACTOOL=/Applications/Xcode.app/Contents/Developer/usr/bin/actool
+    ACTOOL="$(xcode-select -p 2>/dev/null)/usr/bin/actool"
     ICON_TMP=$(mktemp -d)
     if "$ACTOOL" \
             "$XCASSETS_DIR" \
