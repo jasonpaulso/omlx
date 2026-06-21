@@ -65,4 +65,4 @@ The WebMCP layer (`static/js/webmcp/`) is a parallel ES-module tree loaded from 
 
 - License header on new source files: `# SPDX-License-Identifier: Apache-2.0`
 - Test naming: `omlx/<module>.py` → `tests/test_<module>.py`
-- `origin` is the fork (`jasonpaulso/omlx-plus`); `upstream` is `jundot/omlx`. Local `main` tracks `upstream/main`.
+- `origin` is the fork (`jasonpaulso/omlx-plus`) and the primary integration remote: local `main` tracks `origin/main`, and PRs target `origin`. `upstream` is `jundot/omlx`; sync from it explicitly with `git pull upstream main`.
