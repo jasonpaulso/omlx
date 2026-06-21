@@ -69,6 +69,8 @@ JS_DEPS = {
     # KaTeX 0.16.9 (MIT)
     "js/katex.min.js": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js",
     "js/katex-auto-render.min.js": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js",
+    # MCP-B @mcp-b/global IIFE bundle (MIT) — pinned to v2.3.2
+    "js/mcp-b-global.iife.js": "https://unpkg.com/@mcp-b/global@2.3.2/dist/index.iife.js",
 }
 
 # =========================================================================

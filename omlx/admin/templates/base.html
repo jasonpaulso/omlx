@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <meta name="application-name" content="WebMCP">
     <title>{% block title %}oMLX Admin{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="/admin/static/favicon.svg">
 
@@ -22,6 +23,21 @@
 
     <!-- Tailwind CSS (pre-compiled) -->
     <link rel="stylesheet" href="{{ static('css/tailwind.css') }}">
+
+    <!-- WebMCP polyfill — loaded synchronously so navigator.modelContext exists
+         before any browser extension's DOMContentLoaded check fires. -->
+    <script>
+        window.__webModelContextOptions = {
+            autoInitialize: true,
+            transport: { tabServer: { allowedOrigins: ["*"] } }
+        };
+    </script>
+    <script src="/admin/static/js/mcp-b-global.iife.js"></script>
+
+    <!-- WebMCP local relay embed — exposes the tool surface to Claude in Chrome
+         and any MCP host running npx @mcp-b/webmcp-local-relay. Polls for
+         navigator.modelContext (set above) and registers a relay widget. -->
+    <script src="https://cdn.jsdelivr.net/npm/@mcp-b/webmcp-local-relay@2.3.1/dist/browser/embed.js"></script>
 
     <!-- Alpine.js -->
     <script defer src="/admin/static/js/alpine.min.js"></script>
@@ -164,5 +180,8 @@
     </script>
 
     {% block scripts %}{% endblock %}
+    <!-- WebMCP tool layer. ES module entry point — dynamically loads the
+         vendored @mcp-b/global polyfill and registers all tool modules. -->
+    <script type="module" src="/admin/static/js/webmcp/index.js"></script>
 </body>
 </html>

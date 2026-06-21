@@ -121,3 +121,7 @@ docs/native_app_architecture.md
 uv.lock
 # generated TurboQuant memory report (machine-specific)
 tq_batch_memory.md
+
+# WebMCP tool layer — re-include despite the Python lib/ ignore rule above
+!omlx/admin/static/js/webmcp/lib/
+!omlx/admin/static/js/webmcp/lib/**

@@ -824,6 +824,37 @@ class DebugRequestLoggingMiddleware:
 app.add_middleware(DebugRequestLoggingMiddleware)
 
 
+class OriginAgentClusterMiddleware:
+    """Send `Origin-Agent-Cluster: ?1` on admin responses.
+
+    Required by the WebMCP spec: registerTool() rejects with SecurityError
+    unless the agent cluster is origin-keyed (or the page is file://).
+    Scoped to /admin/* only — the /v1/* API surface is intentionally excluded.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path: str = scope.get("path", "")
+        if not path.startswith("/admin"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_header(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"origin-agent-cluster", b"?1"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_header)
+
+
 # =============================================================================
 # Engine Getters
 # =============================================================================
@@ -1690,6 +1721,7 @@ def init_server(
         allow_headers=["*"],
     )
     logger.info(f"CORS origins: {cors_origins}")
+    app.add_middleware(OriginAgentClusterMiddleware)
 
     # Initialize model settings manager
     base_path = (
