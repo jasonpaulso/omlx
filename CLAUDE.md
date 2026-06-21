@@ -12,6 +12,7 @@ Requires macOS 15+ and Apple Silicon. Most of the engine cannot run or be meanin
 
 ```bash
 pip install -e ".[dev]"          # dev setup (also: uv sync --dev)
+uv tool install -e ".[mcp]"      # install the omlx CLI as a uv-managed editable tool on PATH
 omlx serve                       # run server (defaults: ~/.omlx/models, port 8000)
 omlx serve --model-dir /path --port 8000   # flags persist to ~/.omlx/settings.json
 omlx start | stop | restart      # portable lifecycle (Homebrew delegates to brew services)
