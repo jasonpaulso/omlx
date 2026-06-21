@@ -1010,6 +1010,20 @@ def _strip_unused_packages(export_dir: Path):
 
     print(f"  ✓ Stripped {saved / 1024 / 1024:.0f} MB total")
 
+    # Removing packages like cv2/pyarrow can leave venvstacks dynlib symlinks
+    # pointing at deleted package-private dylibs. Those dangling links make
+    # `codesign --verify` fail the staged app bundle, so prune them here while
+    # the export is the single donor source for app builds.
+    removed_links = 0
+    for root, dirs, files in os.walk(export_dir):
+        for name in dirs + files:
+            path = Path(root) / name
+            if path.is_symlink() and not path.exists():
+                path.unlink()
+                removed_links += 1
+    if removed_links:
+        print(f"    Removed {removed_links} dangling symlink(s)")
+
     # Post-strip invariant: no torch artifact must survive. A partial torch
     # (some files but not enough for xgrammar) would be the worst possible
     # outcome — _torch_stub.find_spec("torch") would return a real spec,
@@ -1046,6 +1060,7 @@ def _compute_donor_fingerprint() -> str:
     inputs = [
         SCRIPT_DIR.parent / "pyproject.toml",
         SCRIPT_DIR / "venvstacks.toml",
+        SCRIPT_DIR / "build.py",
         SCRIPT_DIR.parent / "uv.lock",
     ]
     for path in inputs:
