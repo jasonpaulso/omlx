@@ -1,0 +1,16 @@
+{
+  "name": "omlx-agent",
+  "version": "0.2.0",
+  "description": "Operate a running oMLX inference server from any MCP host: an on-request DevOps engineer plus tools to manage models, run inference, inspect health/logs/settings, and manage the KV cache.",
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  },
+  "author": {
+    "name": "oMLX contributors",
+    "url": "https://github.com/jundot/omlx"
+  },
+  "homepage": "https://omlx.ai",
+  "repository": "https://github.com/jundot/omlx",
+  "license": "Apache-2.0",
+  "keywords": ["mlx", "llm", "inference", "apple-silicon", "mcp", "omlx"]
+}

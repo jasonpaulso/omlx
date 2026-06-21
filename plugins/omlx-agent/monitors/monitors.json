@@ -1,0 +1,8 @@
+[
+  {
+    "name": "omlx-log-watch",
+    "command": "tail -n 0 -F \"$HOME/.omlx/logs/server.log\" 2>/dev/null | grep --line-buffered -iE 'error|warning|oom|out of memory|failed|exception|guard'",
+    "description": "oMLX server log: errors and warnings as they happen",
+    "when": "on-skill-invoke:omlx-health-watch"
+  }
+]
