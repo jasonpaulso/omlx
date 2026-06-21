@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "omlx",
+  "description": "Plugins for working with oMLX, the local MLX inference server for Apple Silicon.",
+  "owner": {
+    "name": "oMLX",
+    "url": "https://github.com/jundot/omlx"
+  },
+  "plugins": [
+    {
+      "name": "omlx-agent",
+      "description": "Operate a running oMLX server from any MCP host: manage models, run inference, inspect health/logs/settings, and manage the KV cache.",
+      "source": "./plugins/omlx-agent",
+      "category": "ai-tools",
+      "author": {
+        "name": "oMLX contributors"
+      }
+    }
+  ]
+}

@@ -42,6 +42,17 @@
 
 ---
 
+> ### ⚡ omlx-plus enhancements
+>
+> This is **omlx-plus**, a fork of [oMLX](https://github.com/jundot/omlx) that extends it to be operated by AI agents, not just by hand. Two additive, upstream-compatible layers:
+>
+> - **WebMCP tool surface** — every admin action (model management, chat, settings, benchmarks, logs) is registered in-page via `navigator.modelContext`, so any browser-use agent (Claude in Chrome, the MCP-B extension) can discover and call it. No extension is required to expose the tools, and they bridge to stdio MCP hosts through the WebMCP local relay.
+> - **`omlx-agent` Claude Code plugin** ([docs](plugins/omlx-agent/README.md)) — operate a running server through an on-request **DevOps engineer** instead of the dashboard. It ships a `omlx-devops` agent plus a stdio MCP server that wraps oMLX's REST API: manage models, run inference, and handle health/maintenance, with an onboarding interview and opt-in scheduled and live-monitor modes.
+>
+> **Motivation:** make oMLX fully agent-operable. The goal is to drive the server by natural language and ultimately delegate it to an agent acting as your oMLX senior DevOps engineer, rather than clicking through the admin UI.
+
+---
+
 <p align="center">
   <img src="docs/images/omlx_dashboard.png" alt="oMLX Admin Dashboard" width="800">
 </p>
