@@ -384,7 +384,9 @@ def launch_command(args, extra_args: list[str] | None = None):
     # for connecting. Wildcard addresses (0.0.0.0, ::) are valid bind targets
     # but not connectable — fall back to localhost in that case.
     first_bind = [h.strip() for h in host.split(",") if h.strip()][0] if host else ""
-    connect_host = first_bind if first_bind not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    connect_host = (
+        first_bind if first_bind not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    )
 
     # Check if oMLX server is running
     base_url = f"http://{connect_host}:{port}"
@@ -471,7 +473,9 @@ def launch_command(args, extra_args: list[str] | None = None):
     # If the model was chosen interactively (no --model and no explicit tier flags),
     # use the picked model for all tiers instead of letting settings-based tier
     # models override the user's selection.
-    if args.model is None and not (cli_opus_model or cli_sonnet_model or cli_haiku_model):
+    if args.model is None and not (
+        cli_opus_model or cli_sonnet_model or cli_haiku_model
+    ):
         opus_model = None
         sonnet_model = None
         haiku_model = None
@@ -638,12 +642,16 @@ def lifecycle_command(args) -> int:
         mapping = {"start": "start", "stop": "stop", "restart": "restart"}
         return _run_brew_services(mapping[command])
 
-    if command == "start":
-        print("Background start is available for the macOS app and Homebrew installs.")
-        print("For this install, run foreground server mode with: omlx serve")
-    else:
-        print("Background stop/restart requires the macOS app or Homebrew service.")
-    return 1
+    # Source / uv-tool / pip install: manage a launchd job (LaunchAgent by
+    # default, LaunchDaemon with --system for headless boxes).
+    from .utils import launchd
+
+    return launchd.lifecycle(
+        command,
+        system=getattr(args, "system", False),
+        timeout=timeout,
+        no_wait=no_wait,
+    )
 
 
 def diagnose_menubar() -> int:
@@ -777,6 +785,15 @@ Examples:
             type=float,
             default=60.0,
             help="Seconds to wait for the macOS app/server to reach the requested state",
+        )
+        lifecycle_parser.add_argument(
+            "--system",
+            action="store_true",
+            help=(
+                "Use a system LaunchDaemon (starts at boot, no GUI login needed) "
+                "instead of a per-user LaunchAgent. Source/pip installs only; "
+                "needs sudo. stop/restart auto-detect if omitted."
+            ),
         )
         if name in {"start", "restart"}:
             lifecycle_parser.add_argument(
