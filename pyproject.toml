@@ -36,8 +36,14 @@ dependencies = [
     "regex",
     # mlx-embeddings from latest commit (32981fa)
     "mlx-embeddings @ git+https://github.com/Blaizzy/mlx-embeddings@32981fa4e8064ed664b52071789dd18271fe4206",
-    # mlx-vlm custom processors bypass HF AutoProcessor, so torch is not required
-    "transformers>=5.7.0",
+    # mlx-vlm custom processors bypass HF AutoProcessor, so torch is not required.
+    # Upper cap: transformers 5.13.0 added an unconditional `key.__module__` call to
+    # _LazyAutoMapping.register (auto_factory.py), but the pinned mlx-lm (2c008fd)
+    # still calls AutoTokenizer.register("NewlineTokenizer", ...) with a *string*,
+    # which has no __module__ → AttributeError at import. 5.12.1 is the last
+    # compatible release (5.11/5.12 lack that line). Widen once mlx-lm is bumped to
+    # a commit that registers a config class.
+    "transformers>=5.7.0,<5.13",
     # transformers 5.x's tokenization_mistral_common module imports
     # ReasoningEffort from mistral_common (added in 1.10). The audio extras
     # transitively pull mistral-common via mlx-audio[stt], which historically
