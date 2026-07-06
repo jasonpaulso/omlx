@@ -87,7 +87,7 @@
             globalSettings: {
                 base_path: '',
                 server: { host: '127.0.0.1', port: 8000, log_level: 'info', sse_keepalive_mode: 'chunk', burst_decode_mode: 'balanced', preserve_mid_system_cache: true },
-                model: { model_dirs: [''] },
+                model: { model_dirs: [''], model_fallback: false, hide_helper_models: false },
                 memory: { prefill_memory_guard: true, memory_guard_tier: 'balanced', memory_guard_custom_ceiling_gb: 0 },
                 scheduler: { max_concurrent_requests: 8, embedding_batch_size: 32, chunked_prefill: false },
                 cache: { enabled: true, ssd_cache_dir: '', ssd_cache_max_size: 'auto', hot_cache_max_size: '0', initial_cache_blocks: 256, hot_cache_only: false },
@@ -844,6 +844,7 @@
                             preserve_mid_system_cache: this.globalSettings.server.preserve_mid_system_cache,
                             model_dirs: this.globalSettings.model.model_dirs.filter(d => d.trim()),
                             model_fallback: this.globalSettings.model.model_fallback,
+                            hide_helper_models: this.globalSettings.model.hide_helper_models,
                             memory_prefill_memory_guard: this.globalSettings.memory.prefill_memory_guard,
                             memory_guard_tier: this.globalSettings.memory.memory_guard_tier,
                             memory_guard_custom_ceiling_gb: this.globalSettings.memory.memory_guard_custom_ceiling_gb,
@@ -1015,6 +1016,9 @@
                         } else if (field === 'is_pinned') {
                             const model = this.models.find(m => m.id === modelId);
                             if (model) model.pinned = value;
+                        } else if (field === 'is_hidden') {
+                            const model = this.models.find(m => m.id === modelId);
+                            if (model) model.is_hidden = value;
                         }
                     } else if (response.status === 401) {
                         window.location.href = '/admin';
@@ -3975,6 +3979,10 @@
                         case 'is_default':
                             aVal = a.is_default ? 1 : 0;
                             bVal = b.is_default ? 1 : 0;
+                            break;
+                        case 'is_hidden':
+                            aVal = a.is_hidden ? 1 : 0;
+                            bVal = b.is_hidden ? 1 : 0;
                             break;
                         default:
                             return 0;
