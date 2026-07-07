@@ -28,8 +28,44 @@
                                     <button type="button" @click="suitSelectedModels = {}" class="text-xs font-medium text-neutral-500 hover:text-neutral-900 transition-colors">{{ t('suitability.config.select_none') }}</button>
                                 </div>
                             </div>
+                            <!-- Search / type filter / sort toolbar -->
+                            <div class="flex flex-col sm:flex-row sm:items-center gap-2 mb-2">
+                                <div class="relative flex-1">
+                                    <i data-lucide="search" class="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+                                    <input type="text" x-model="suitPickerSearch"
+                                           :placeholder="window.t('suitability.config.search_placeholder')"
+                                           class="w-full pl-9 pr-9 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all bg-white">
+                                    <button x-show="suitPickerSearch" @click="suitPickerSearch = ''"
+                                            class="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-all">
+                                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                </div>
+                                <select x-model="suitPickerTypeFilter"
+                                        class="px-3 py-2 text-sm border border-neutral-200 rounded-lg bg-white focus:ring-2 focus:ring-neutral-900 focus:border-transparent">
+                                    <option value="all">{{ t('suitability.config.type_all') }}</option>
+                                    <option value="llm">LLM</option>
+                                    <option value="vlm">VLM</option>
+                                </select>
+                                <div class="flex items-center gap-1">
+                                    <select x-model="suitPickerSortBy"
+                                            class="px-3 py-2 text-sm border border-neutral-200 rounded-lg bg-white focus:ring-2 focus:ring-neutral-900 focus:border-transparent">
+                                        <option value="id">{{ t('suitability.config.sort_name') }}</option>
+                                        <option value="size">{{ t('suitability.config.sort_size') }}</option>
+                                    </select>
+                                    <button type="button"
+                                            @click="suitPickerSortDir = suitPickerSortDir === 'asc' ? 'desc' : 'asc'"
+                                            :title="suitPickerSortDir === 'asc' ? window.t('suitability.config.sort_asc') : window.t('suitability.config.sort_desc')"
+                                            class="p-2 rounded-lg border border-neutral-200 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 transition-all flex-shrink-0">
+                                        <i data-lucide="arrow-down" class="w-4 h-4" x-show="suitPickerSortDir === 'desc'"></i>
+                                        <i data-lucide="arrow-up" class="w-4 h-4" x-show="suitPickerSortDir === 'asc'"></i>
+                                    </button>
+                                </div>
+                            </div>
                             <div class="max-h-56 overflow-y-auto border border-neutral-200 rounded-xl divide-y divide-neutral-100">
-                                <template x-for="m in suitPickerModels()" :key="m.id">
+                                <div x-show="suitPickerModelsFiltered().length === 0"
+                                     class="px-4 py-6 text-center text-xs text-neutral-400"
+                                     x-text="window.t('suitability.config.no_match')"></div>
+                                <template x-for="m in suitPickerModelsFiltered()" :key="m.id">
                                     <label class="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-neutral-50 transition-colors">
                                         <input type="checkbox" :checked="!!suitSelectedModels[m.id]"
                                                @change="suitSelectedModels = { ...suitSelectedModels, [m.id]: $event.target.checked }"

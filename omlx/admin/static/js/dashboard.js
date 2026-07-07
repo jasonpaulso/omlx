@@ -552,6 +552,10 @@
             suitSearch: '',
             suitRoleFilter: 'all',
             suitHealthFilter: 'all',
+            suitPickerSearch: '',
+            suitPickerTypeFilter: 'all',   // 'all' | 'llm' | 'vlm'
+            suitPickerSortBy: 'id',        // 'id' | 'size'
+            suitPickerSortDir: 'asc',
             suitConfigOpen: true,
             suitRankingsOpen: true,
             suitTableOpen: true,
@@ -3679,6 +3683,25 @@
                     && !this.suitIsDraftOrAssistant(m));
             },
 
+            // Sweep-picker list after search / type filter / sort. Select-all
+            // and the rendered checkboxes both read this so "all" means "all in
+            // the current view".
+            suitPickerModelsFiltered() {
+                let list = this.suitPickerModels();
+                const q = (this.suitPickerSearch || '').trim().toLowerCase();
+                if (q) list = list.filter(m => (m.id || '').toLowerCase().includes(q));
+                if (this.suitPickerTypeFilter !== 'all') {
+                    list = list.filter(m => (m.model_type || 'llm') === this.suitPickerTypeFilter);
+                }
+                const dir = this.suitPickerSortDir === 'asc' ? 1 : -1;
+                return [...list].sort((a, b) => {
+                    const cmp = this.suitPickerSortBy === 'size'
+                        ? (a.estimated_size || 0) - (b.estimated_size || 0)
+                        : (a.id || '').localeCompare(b.id || '');
+                    return cmp * dir;
+                });
+            },
+
             suitSortValue(modelId, key) {
                 const m = this.suitTable.models[modelId] || {};
                 switch (key) {
@@ -3754,8 +3777,8 @@
             },
 
             suitSelectAllModels() {
-                const selected = {};
-                for (const m of this.suitPickerModels()) {
+                const selected = { ...this.suitSelectedModels };
+                for (const m of this.suitPickerModelsFiltered()) {
                     selected[m.id] = true;
                 }
                 this.suitSelectedModels = selected;

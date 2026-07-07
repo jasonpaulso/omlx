@@ -299,6 +299,10 @@ templates + i18n; no Python):
   Health / Size / Load headers (on top of the existing per-axis sorts). Sort is
   generalized in `suitModelIds()` via `suitSortValue()`; unranked rows (null
   score) always sort last.
+- The Sweep Configuration model picker gets its own compact toolbar: search,
+  an LLM/VLM type filter, and a name/size sort with a direction toggle
+  (`suitPickerModelsFiltered()`). "Select all" is additive over the current
+  filtered view, not a wholesale replace.
 - The three persistent cards (Config, Per-Axis Rankings, Table) are collapsible
   with the same chevron pattern as the Performance tab's Metrics card
   (`suitConfigOpen` / `suitRankingsOpen` / `suitTableOpen`).
