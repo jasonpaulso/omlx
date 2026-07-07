@@ -128,12 +128,26 @@ class TestSweep:
         monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
         monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
 
-        suitability.start_sweep(
+        status = suitability.start_sweep(
             ["big-model", "small-model"], {"mmlu_pro": 30}, pool
         )
-        assert [q.model_id for q in queued] == ["big-model", "small-model"]
+        # Companion (<5GB) is excluded from standalone evals, not benched
+        assert [q.model_id for q in queued] == ["big-model"]
         assert all(q.baseline_mode for q in queued)
         assert all(q.benchmarks == {"mmlu_pro": 30} for q in queued)
-        # Roles pre-registered: small model classified as companion
+        assert status["queued"] == ["big-model"]
+        assert status["skipped"] == {"small-model": "draft_companion"}
         assert store.get_model("small-model")["role"] == "draft_companion"
         assert store.get_model("big-model")["role"] == "chat"
+
+    def test_user_role_override_restores_eligibility(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+
+        store.set_role("small-model", "chat", source="user")
+        status = suitability.start_sweep(["small-model"], {"mmlu": 10}, pool)
+        assert status["queued"] == ["small-model"]
+        assert status["skipped"] == {}

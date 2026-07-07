@@ -121,11 +121,23 @@ def start_sweep(
         start_next_from_queue,
     )
 
-    if _store is not None:
-        for model_id in models:
-            _store.ensure_model(model_id, size_gb=_model_size_gb(model_id))
-
+    skipped: dict[str, str] = {}
+    eligible: list[str] = []
     for model_id in models:
+        role = "chat"
+        if _store is not None:
+            _store.ensure_model(model_id, size_gb=_model_size_gb(model_id))
+            entry = _store.get_model(model_id)
+            role = entry.get("role", "chat") if entry else "chat"
+        # Companions/embedders/etc. are never benched standalone (a draft
+        # model scored standalone is a category error, not a data point).
+        # User role overrides via /api/suitability/role change eligibility.
+        if role == "chat":
+            eligible.append(model_id)
+        else:
+            skipped[model_id] = role
+
+    for model_id in eligible:
         add_to_queue(
             AccuracyBenchmarkRequest(
                 model_id=model_id,
@@ -134,8 +146,12 @@ def start_sweep(
                 baseline_mode=True,
             )
         )
-    start_next_from_queue(engine_pool)
+    if eligible:
+        start_next_from_queue(engine_pool)
     logger.info(
-        "Suitability sweep queued: %d model(s) x %s", len(models), list(benchmarks)
+        "Suitability sweep queued: %d model(s) x %s (skipped non-chat: %s)",
+        len(eligible),
+        list(benchmarks),
+        skipped or "none",
     )
-    return get_queue_status()
+    return {"queued": eligible, "skipped": skipped, **get_queue_status()}
