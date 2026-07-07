@@ -29,7 +29,7 @@
                                 </div>
                             </div>
                             <!-- Search / type filter / sort toolbar -->
-                            <div class="flex flex-col sm:flex-row sm:items-center gap-2 mb-2">
+                            <div class="flex flex-col sm:flex-row sm:items-stretch gap-2 mb-2">
                                 <div class="relative flex-1">
                                     <i data-lucide="search" class="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
                                     <input type="text" x-model="suitPickerSearch"
@@ -46,7 +46,7 @@
                                     <option value="llm">LLM</option>
                                     <option value="vlm">VLM</option>
                                 </select>
-                                <div class="flex items-center gap-1">
+                                <div class="flex items-stretch gap-1">
                                     <select x-model="suitPickerSortBy"
                                             class="px-3 py-2 text-sm border border-neutral-200 rounded-lg bg-white focus:ring-2 focus:ring-neutral-900 focus:border-transparent">
                                         <option value="id">{{ t('suitability.config.sort_name') }}</option>
@@ -271,7 +271,7 @@
 
                     <div x-show="suitTableOpen" x-collapse x-cloak>
                     <!-- Search + filters toolbar -->
-                    <div x-show="Object.keys(suitTable.models).length > 0" class="flex flex-col lg:flex-row lg:items-center gap-3 px-6 py-4 border-b border-neutral-100">
+                    <div x-show="Object.keys(suitTable.models).length > 0" class="flex flex-col lg:flex-row lg:items-stretch gap-3 px-6 py-4 border-b border-neutral-100">
                         <div class="relative flex-1">
                             <i data-lucide="search" class="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
                             <input type="text" x-model="suitSearch"
