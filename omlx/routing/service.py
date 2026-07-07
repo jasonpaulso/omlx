@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from omlx.routing import table as dispatch_table
 from omlx.routing.policy import decide
 from omlx.routing.profiler import RouterFeatures, RouterProfiler
 from omlx.settings import RoutingSettings
@@ -27,6 +28,8 @@ from omlx.settings import RoutingSettings
 logger = logging.getLogger(__name__)
 
 EngineGetter = Callable[[str], Awaitable[Any]]
+ModelsGetter = Callable[[], dict[str, dict]]
+ResidentGetter = Callable[[], set[str]]
 
 
 @dataclass
@@ -39,6 +42,7 @@ class RouteDecision:
     features: RouterFeatures | None
     raw_analysis: str | None
     classify_ms: float
+    candidates: list[tuple[str, float]] | None = None  # table dispatch only
 
     @property
     def header_value(self) -> str:
@@ -86,6 +90,8 @@ class RoutingService:
         self.settings = settings
         self._profiler = RouterProfiler(settings.router_model)
         self._engine_getter: EngineGetter | None = None
+        self._models_getter: ModelsGetter | None = None
+        self._resident_getter: ResidentGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
@@ -96,6 +102,17 @@ class RoutingService:
         Wired from the server lifespan: fn(model_id) -> engine.
         """
         self._engine_getter = fn
+
+    def set_table_sources(
+        self, models_getter: ModelsGetter, resident_getter: ResidentGetter
+    ) -> None:
+        """Wire suitability-store and pool-residency snapshots (M3 N-way).
+
+        Cheap sync callables evaluated per routed request. Table dispatch
+        stays inert unless settings.table_dispatch.enabled is also true.
+        """
+        self._models_getter = models_getter
+        self._resident_getter = resident_getter
 
     async def route_chat_request(
         self,
@@ -144,6 +161,22 @@ class RoutingService:
                 self._record_decision(decision, request_id, endpoint, stream)
                 return decision
 
+        # M3: table dispatch (opt-in) — measured per-axis leaders beat the
+        # binary pair when the table has data; binary remains the fallback.
+        table_choice = self._try_table(features, override)
+        if table_choice is not None and table_choice.target is not None:
+            decision = RouteDecision(
+                target=table_choice.target,
+                rule_fired=table_choice.rule,
+                override=override,
+                features=features,
+                raw_analysis=raw_analysis,
+                classify_ms=(time.perf_counter() - start) * 1000,
+                candidates=table_choice.candidates or None,
+            )
+            self._record_decision(decision, request_id, endpoint, stream)
+            return decision
+
         target_key, rule_fired = decide(features, override, cfg)
         classify_ms = (time.perf_counter() - start) * 1000
         decision = RouteDecision(
@@ -156,6 +189,46 @@ class RoutingService:
         )
         self._record_decision(decision, request_id, endpoint, stream)
         return decision
+
+    def _try_table(
+        self, features: RouterFeatures | None, override: str | None
+    ) -> dispatch_table.TableChoice | None:
+        """Attempt N-way table dispatch. Returns None to fall back to binary.
+
+        Never raises: any store/pool snapshot failure logs and falls back.
+        """
+        cfg = self.settings.table_dispatch
+        if (
+            not cfg.enabled
+            or self._models_getter is None
+            or self._resident_getter is None
+        ):
+            return None
+        try:
+            models = self._models_getter()
+            if not models:
+                return None
+            generalist = cfg.default_target or self.settings.targets.get("big")
+            if override is not None:
+                # Agentic overrides route to the generalist spine in N-way
+                # mode, mirroring the binary policy's big-target behavior.
+                if generalist:
+                    return dispatch_table.TableChoice(
+                        generalist, f"override:{override}", []
+                    )
+                return None
+            return dispatch_table.choose(
+                features,
+                models,
+                self._resident_getter(),
+                escalate_at=self.settings.policy.escalate_complexity_at,
+                residency_epsilon=cfg.residency_epsilon,
+                max_interactive_median_q_time_s=cfg.max_interactive_median_q_time_s,
+                default_target=generalist,
+            )
+        except Exception as e:  # noqa: BLE001 - dispatch must never 5xx
+            logger.warning("table dispatch failed, falling back to binary: %s", e)
+            return None
 
     def _fail_open(
         self, reason: str, override: str | None, start: float
@@ -224,6 +297,11 @@ class RoutingService:
             "rule_fired": decision.rule_fired,
             "target": decision.target,
             "classify_ms": round(decision.classify_ms, 1),
+            "candidates_considered": (
+                [[m, round(s, 4)] for m, s in decision.candidates]
+                if decision.candidates
+                else None
+            ),
             "outcome": None,
         }
 

@@ -419,6 +419,22 @@ async def lifespan(app: FastAPI):
             return await _server_state.engine_pool.get_engine(model_id, force_lm=True)
 
         service.set_engine_getter(_routing_engine_getter)
+
+        def _suitability_models() -> dict:
+            from .admin.suitability import get_store
+
+            store = get_store()
+            return store.all_models() if store is not None else {}
+
+        def _resident_model_ids() -> set:
+            pool = _server_state.engine_pool
+            if pool is None:
+                return set()
+            return {
+                m["id"] for m in pool.get_status()["models"] if m.get("loaded")
+            }
+
+        service.set_table_sources(_suitability_models, _resident_model_ids)
         _server_state.routing_service = service
         router_id = (
             resolve_model_id(routing_settings.router_model)

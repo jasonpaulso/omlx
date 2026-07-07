@@ -853,6 +853,41 @@ class RoutingTelemetrySettings:
 
 
 @dataclass
+class RoutingTableDispatchSettings:
+    """N-way dispatch driven by the measured suitability table (M3).
+
+    Off by default; when enabled and the table has data, dispatch picks
+    per-axis leaders instead of the binary small/big targets. Binary
+    targets remain the fallback for axes with no measured candidates."""
+
+    enabled: bool = False
+    default_target: str | None = None
+    residency_epsilon: float = 0.02
+    max_interactive_median_q_time_s: float = 30.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "default_target": self.default_target,
+            "residency_epsilon": self.residency_epsilon,
+            "max_interactive_median_q_time_s": self.max_interactive_median_q_time_s,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingTableDispatchSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            default_target=data.get("default_target"),
+            residency_epsilon=data.get("residency_epsilon", 0.02),
+            max_interactive_median_q_time_s=data.get(
+                "max_interactive_median_q_time_s", 30.0
+            ),
+        )
+
+
+@dataclass
 class RoutingSettings:
     """Semantic routing settings: classify requests to a virtual model id
     and rewrite them to a concrete target model. Defaults OFF."""
@@ -871,6 +906,9 @@ class RoutingSettings:
     telemetry: RoutingTelemetrySettings = field(
         default_factory=RoutingTelemetrySettings
     )
+    table_dispatch: RoutingTableDispatchSettings = field(
+        default_factory=RoutingTableDispatchSettings
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -882,6 +920,7 @@ class RoutingSettings:
             "targets": dict(self.targets),
             "policy": self.policy.to_dict(),
             "telemetry": self.telemetry.to_dict(),
+            "table_dispatch": self.table_dispatch.to_dict(),
         }
 
     @classmethod
@@ -903,6 +942,9 @@ class RoutingSettings:
             ),
             policy=RoutingPolicySettings.from_dict(data.get("policy", {})),
             telemetry=RoutingTelemetrySettings.from_dict(data.get("telemetry", {})),
+            table_dispatch=RoutingTableDispatchSettings.from_dict(
+                data.get("table_dispatch", {})
+            ),
         )
 
 
