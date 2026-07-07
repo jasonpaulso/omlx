@@ -251,88 +251,84 @@
                                     <th class="w-8"></th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <template x-for="modelId in suitModelIds()" :key="modelId">
-                                    <template x-for="row in [suitTable.models[modelId]]" :key="modelId + '-row'">
-                                        <tr>
-                                        <tr class="border-b border-neutral-100 hover:bg-neutral-50 transition-colors"
-                                            :class="row.health?.status !== 'ok' ? 'bg-red-50/50' : ''">
-                                            <td class="px-4 py-3 font-medium text-neutral-900">
-                                                <button type="button" class="flex items-center gap-1.5 hover:text-neutral-600" @click="suitToggleExpanded(modelId)">
-                                                    <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-neutral-400 transition-transform flex-shrink-0" :class="suitExpandedModel === modelId ? 'rotate-90' : ''"></i>
-                                                    <span x-text="modelId"></span>
-                                                </button>
-                                            </td>
-                                            <td class="px-4 py-3">
-                                                <select :value="row.role"
-                                                        @change="setSuitabilityRole(modelId, $event.target.value)"
-                                                        :disabled="suitRoleSaving[modelId]"
-                                                        class="px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:ring-2 focus:ring-neutral-900 focus:border-transparent disabled:opacity-50">
-                                                    <template x-for="opt in suitRoleOptions" :key="opt">
-                                                        <option :value="opt" x-text="t('suitability.role.' + opt)"></option>
-                                                    </template>
-                                                </select>
-                                            </td>
-                                            <td class="px-4 py-3">
-                                                <span class="inline-flex items-center gap-1.5 text-xs font-medium"
-                                                      :class="row.health?.status === 'ok' ? 'text-green-600' : 'text-red-600'">
-                                                    <span class="w-2 h-2 rounded-full flex-shrink-0" :class="row.health?.status === 'ok' ? 'bg-green-500' : 'bg-red-500'"></span>
-                                                    <span x-text="row.health?.status === 'ok' ? t('suitability.table.healthy') : t('suitability.table.unhealthy')"></span>
-                                                </span>
-                                            </td>
-                                            <template x-for="axis in suitAxes()" :key="axis">
-                                                <td class="px-4 py-3 text-right tabular-nums font-medium"
-                                                    :class="row.categories?.[axis] == null ? 'text-neutral-300' : (row.categories[axis] >= 0.7 ? 'text-green-600' : row.categories[axis] >= 0.4 ? 'text-amber-600' : 'text-red-500')"
-                                                    x-text="row.categories?.[axis] != null ? (row.categories[axis] * 100).toFixed(1) + '%' : t('suitability.table.no_data')"></td>
-                                            </template>
-                                            <td class="px-4 py-3 text-right tabular-nums text-neutral-700" x-text="row.size_gb != null ? row.size_gb + ' GB' : t('suitability.table.no_data')"></td>
-                                            <td class="px-4 py-3 text-right tabular-nums text-neutral-700" x-text="row.perf?.load_s != null ? row.perf.load_s + 's' : t('suitability.table.no_data')"></td>
-                                            <td class="px-4 py-3"></td>
-                                        </tr>
+                            <template x-for="modelId in suitModelIds()" :key="modelId">
+                                <tbody>
+                                    <tr class="border-b border-neutral-100 hover:bg-neutral-50 transition-colors"
+                                        :class="suitTable.models[modelId].health?.status !== 'ok' ? 'bg-red-50/50' : ''">
+                                        <td class="px-4 py-3 font-medium text-neutral-900">
+                                            <button type="button" class="flex items-center gap-1.5 hover:text-neutral-600" @click="suitToggleExpanded(modelId)">
+                                                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-neutral-400 transition-transform flex-shrink-0" :class="suitExpandedModel === modelId ? 'rotate-90' : ''"></i>
+                                                <span x-text="modelId"></span>
+                                            </button>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <select :value="suitTable.models[modelId].role"
+                                                    @change="setSuitabilityRole(modelId, $event.target.value)"
+                                                    :disabled="suitRoleSaving[modelId]"
+                                                    class="px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:ring-2 focus:ring-neutral-900 focus:border-transparent disabled:opacity-50">
+                                                <template x-for="opt in suitRoleOptions" :key="opt">
+                                                    <option :value="opt" x-text="t('suitability.role.' + opt)"></option>
+                                                </template>
+                                            </select>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <span class="inline-flex items-center gap-1.5 text-xs font-medium"
+                                                  :class="suitTable.models[modelId].health?.status === 'ok' ? 'text-green-600' : 'text-red-600'">
+                                                <span class="w-2 h-2 rounded-full flex-shrink-0" :class="suitTable.models[modelId].health?.status === 'ok' ? 'bg-green-500' : 'bg-red-500'"></span>
+                                                <span x-text="suitTable.models[modelId].health?.status === 'ok' ? t('suitability.table.healthy') : t('suitability.table.unhealthy')"></span>
+                                            </span>
+                                        </td>
+                                        <template x-for="axis in suitAxes()" :key="axis">
+                                            <td class="px-4 py-3 text-right tabular-nums font-medium"
+                                                :class="suitTable.models[modelId].categories?.[axis] == null ? 'text-neutral-300' : (suitTable.models[modelId].categories[axis] >= 0.7 ? 'text-green-600' : suitTable.models[modelId].categories[axis] >= 0.4 ? 'text-amber-600' : 'text-red-500')"
+                                                x-text="suitTable.models[modelId].categories?.[axis] != null ? (suitTable.models[modelId].categories[axis] * 100).toFixed(1) + '%' : t('suitability.table.no_data')"></td>
+                                        </template>
+                                        <td class="px-4 py-3 text-right tabular-nums text-neutral-700" x-text="suitTable.models[modelId].size_gb != null ? suitTable.models[modelId].size_gb + ' GB' : t('suitability.table.no_data')"></td>
+                                        <td class="px-4 py-3 text-right tabular-nums text-neutral-700" x-text="suitTable.models[modelId].perf?.load_s != null ? suitTable.models[modelId].perf.load_s + 's' : t('suitability.table.no_data')"></td>
+                                        <td class="px-4 py-3"></td>
+                                    </tr>
 
-                                        <!-- Expanded detail row -->
-                                        <tr x-show="suitExpandedModel === modelId" x-cloak class="border-b border-neutral-100 bg-neutral-50/60">
-                                            <td :colspan="4 + suitAxes().length" class="px-4 py-4">
-                                                <div x-show="row.health?.status !== 'ok' && row.health?.last_error" class="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                                                    <span class="font-medium">{{ t('suitability.table.last_error') }}:</span>
-                                                    <span x-text="'[' + row.health?.last_error?.phase + '] ' + row.health?.last_error?.message"></span>
-                                                </div>
-                                                <div class="text-[11px] font-bold uppercase tracking-wider text-neutral-500 mb-2">{{ t('suitability.table.detail.section_label') }}</div>
-                                                <div x-show="(row.evals || []).length === 0" class="text-xs text-neutral-400">{{ t('suitability.table.detail.no_evals') }}</div>
-                                                <div x-show="(row.evals || []).length > 0" class="overflow-x-auto">
-                                                    <table class="w-full text-xs">
-                                                        <thead>
-                                                            <tr class="border-b border-neutral-200">
-                                                                <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_bench') }}</th>
-                                                                <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_axis') }}</th>
-                                                                <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_accuracy') }}</th>
-                                                                <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_n') }}</th>
-                                                                <th class="text-center py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_baseline') }}</th>
-                                                                <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_source') }}</th>
-                                                                <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_date') }}</th>
+                                    <!-- Expanded detail row -->
+                                    <tr x-show="suitExpandedModel === modelId" x-cloak class="border-b border-neutral-100 bg-neutral-50/60">
+                                        <td :colspan="4 + suitAxes().length" class="px-4 py-4">
+                                            <div x-show="suitTable.models[modelId].health?.status !== 'ok' && suitTable.models[modelId].health?.last_error" class="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                                                <span class="font-medium">{{ t('suitability.table.last_error') }}:</span>
+                                                <span x-text="'[' + suitTable.models[modelId].health?.last_error?.phase + '] ' + suitTable.models[modelId].health?.last_error?.message"></span>
+                                            </div>
+                                            <div class="text-[11px] font-bold uppercase tracking-wider text-neutral-500 mb-2">{{ t('suitability.table.detail.section_label') }}</div>
+                                            <div x-show="(suitTable.models[modelId].evals || []).length === 0" class="text-xs text-neutral-400">{{ t('suitability.table.detail.no_evals') }}</div>
+                                            <div x-show="(suitTable.models[modelId].evals || []).length > 0" class="overflow-x-auto">
+                                                <table class="w-full text-xs">
+                                                    <thead>
+                                                        <tr class="border-b border-neutral-200">
+                                                            <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_bench') }}</th>
+                                                            <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_axis') }}</th>
+                                                            <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_accuracy') }}</th>
+                                                            <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_n') }}</th>
+                                                            <th class="text-center py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_baseline') }}</th>
+                                                            <th class="text-left py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_source') }}</th>
+                                                            <th class="text-right py-1.5 px-2 font-medium text-neutral-500">{{ t('suitability.table.detail.col_date') }}</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        <template x-for="(e, idx) in suitEvalsSorted(suitTable.models[modelId].evals)" :key="idx">
+                                                            <tr class="border-b border-neutral-100">
+                                                                <td class="py-1 px-2 text-neutral-700" x-text="e.bench"></td>
+                                                                <td class="py-1 px-2 text-neutral-500" x-text="e.axis"></td>
+                                                                <td class="py-1 px-2 text-right font-medium tabular-nums" x-text="(e.accuracy * 100).toFixed(1) + '%'"></td>
+                                                                <td class="py-1 px-2 text-right tabular-nums text-neutral-500" x-text="e.n"></td>
+                                                                <td class="py-1 px-2 text-center" x-text="e.baseline ? '✓' : ''"></td>
+                                                                <td class="py-1 px-2 text-neutral-500" x-text="e.source"></td>
+                                                                <td class="py-1 px-2 text-right text-neutral-400" x-text="new Date(e.date).toLocaleString()"></td>
                                                             </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            <template x-for="(e, idx) in suitEvalsSorted(row.evals)" :key="idx">
-                                                                <tr class="border-b border-neutral-100">
-                                                                    <td class="py-1 px-2 text-neutral-700" x-text="e.bench"></td>
-                                                                    <td class="py-1 px-2 text-neutral-500" x-text="e.axis"></td>
-                                                                    <td class="py-1 px-2 text-right font-medium tabular-nums" x-text="(e.accuracy * 100).toFixed(1) + '%'"></td>
-                                                                    <td class="py-1 px-2 text-right tabular-nums text-neutral-500" x-text="e.n"></td>
-                                                                    <td class="py-1 px-2 text-center" x-text="e.baseline ? '✓' : ''"></td>
-                                                                    <td class="py-1 px-2 text-neutral-500" x-text="e.source"></td>
-                                                                    <td class="py-1 px-2 text-right text-neutral-400" x-text="new Date(e.date).toLocaleString()"></td>
-                                                                </tr>
-                                                            </template>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        </tr>
-                                    </template>
-                                </template>
-                            </tbody>
+                                                        </template>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </template>
                         </table>
                     </div>
                 </div>

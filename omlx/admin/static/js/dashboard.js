@@ -61,7 +61,7 @@
         'gemma4_unified_assistant',
         'qwen3_5_mtp',
     ]);
-    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'bench']);
+    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'bench', 'suitability']);
     const DASHBOARD_SETTINGS_TABS = new Set(['global', 'integrations', 'models']);
     const DASHBOARD_MODELS_TABS = new Set(['manager', 'downloader', 'quantizer', 'uploader']);
     const DASHBOARD_BENCH_TABS = new Set(['throughput', 'accuracy']);
@@ -525,6 +525,22 @@
             accShowText: false,
             accCopied: false,
 
+            // Roster Suitability state
+            suitSelectedModels: {},   // { model_id: bool }
+            suitBenchmarks: { mmlu: false, mmlu_pro: true, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: false, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: false, mbpp: false, livecodebench: true, bbq: false, safetybench: false },
+            suitSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300 },
+            suitBatchSize: 1,
+            suitTable: { models: {}, rankings: {} },
+            suitTableLoading: false,
+            suitSweepError: '',
+            suitSkipped: null,        // { model_id: role } from the last sweep response
+            suitSortAxis: '',
+            suitSortDir: 'desc',
+            suitRoleOptions: ['chat', 'draft_companion', 'embedding', 'reranker', 'router'],
+            suitRoleSaving: {},       // { model_id: bool }
+            suitExpandedModel: null,
+            _suitRefreshTimer: null,
+
             async init() {
                 // Apply theme
                 this.applyTheme();
@@ -639,6 +655,13 @@
                     if (!this.benchDeviceInfo) await this.loadBenchDeviceInfo();
                     await this.loadBenchState();
                     await this.loadAccState();
+                }
+                if (value === 'suitability') {
+                    await this.loadSuitabilityTable();
+                    await this.loadAccQueueStatus();
+                    this.startSuitabilityRefresh();
+                } else {
+                    this.stopSuitabilityRefresh();
                 }
             },
 
@@ -3548,6 +3571,149 @@
                 a.download = filename;
                 a.click();
                 URL.revokeObjectURL(url);
+            },
+
+            // Roster Suitability functions
+
+            async loadSuitabilityTable() {
+                this.suitTableLoading = true;
+                try {
+                    const resp = await fetch('/admin/api/suitability/table');
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        this.suitTable = { models: data.models || {}, rankings: data.rankings || {} };
+                    }
+                } catch (err) {
+                    console.error('Failed to load suitability table:', err);
+                } finally {
+                    this.suitTableLoading = false;
+                }
+            },
+
+            suitAxes() {
+                return Object.keys(this.suitTable.rankings).sort();
+            },
+
+            suitModelIds() {
+                const ids = Object.keys(this.suitTable.models);
+                if (!this.suitSortAxis) return ids.sort();
+                return ids.sort((a, b) => {
+                    const av = this.suitTable.models[a].categories?.[this.suitSortAxis];
+                    const bv = this.suitTable.models[b].categories?.[this.suitSortAxis];
+                    if (av == null && bv == null) return 0;
+                    if (av == null) return 1;
+                    if (bv == null) return -1;
+                    return this.suitSortDir === 'asc' ? av - bv : bv - av;
+                });
+            },
+
+            suitSetSort(axis) {
+                if (this.suitSortAxis === axis) {
+                    this.suitSortDir = this.suitSortDir === 'desc' ? 'asc' : 'desc';
+                } else {
+                    this.suitSortAxis = axis;
+                    this.suitSortDir = 'desc';
+                }
+            },
+
+            suitEvalsSorted(evals) {
+                return [...(evals || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
+            },
+
+            suitSelectAllModels() {
+                const selected = {};
+                for (const m of this.models) {
+                    if (m.model_type === 'llm' || m.model_type === 'vlm' || !m.model_type) {
+                        selected[m.id] = true;
+                    }
+                }
+                this.suitSelectedModels = selected;
+            },
+
+            suitToggleExpanded(modelId) {
+                this.suitExpandedModel = this.suitExpandedModel === modelId ? null : modelId;
+            },
+
+            async startSuitabilitySweep() {
+                const modelIds = Object.entries(this.suitSelectedModels).filter(([_, v]) => v).map(([k]) => k);
+                const benchmarks = Object.fromEntries(
+                    Object.entries(this.suitBenchmarks)
+                        .filter(([_, v]) => v)
+                        .map(([k]) => [k, this.suitSampleSizes[k]])
+                );
+                if (modelIds.length === 0 || Object.keys(benchmarks).length === 0) return;
+
+                this.suitSweepError = '';
+                this.suitSkipped = null;
+                try {
+                    const resp = await fetch('/admin/api/suitability/sweep', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            models: modelIds,
+                            benchmarks,
+                            batch_size: this.suitBatchSize,
+                        }),
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json();
+                        throw new Error(err.detail || 'Failed to start sweep');
+                    }
+                    const data = await resp.json();
+                    this.suitSkipped = data.skipped && Object.keys(data.skipped).length > 0 ? data.skipped : null;
+
+                    // Mirror the shared accuracy-benchmark queue state so the
+                    // progress strip (also used by the Accuracy bench tab)
+                    // reflects this sweep.
+                    this.accQueue = data.queue || [];
+                    this.accRunning = data.running || false;
+                    this.accCurrentModel = data.current_model || '';
+                    if (data.last_progress) this.accProgress = data.last_progress;
+                    if (data.current_bench_id) {
+                        this.accCurrentBenchId = data.current_bench_id;
+                        this.connectAccSSE(data.current_bench_id);
+                    }
+                } catch (err) {
+                    this.suitSweepError = err.message;
+                }
+            },
+
+            async setSuitabilityRole(modelId, role) {
+                this.suitRoleSaving = { ...this.suitRoleSaving, [modelId]: true };
+                try {
+                    const resp = await fetch('/admin/api/suitability/role', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ model_id: modelId, role }),
+                    });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        if (data.model) {
+                            this.suitTable.models[modelId] = data.model;
+                        }
+                    }
+                } catch (err) {
+                    console.error('Failed to set role:', err);
+                } finally {
+                    const saving = { ...this.suitRoleSaving };
+                    delete saving[modelId];
+                    this.suitRoleSaving = saving;
+                }
+            },
+
+            startSuitabilityRefresh() {
+                this.stopSuitabilityRefresh();
+                this._suitRefreshTimer = setInterval(() => {
+                    this.loadSuitabilityTable();
+                    this.loadAccQueueStatus();
+                }, 5000);
+            },
+
+            stopSuitabilityRefresh() {
+                if (this._suitRefreshTimer) {
+                    clearInterval(this._suitRefreshTimer);
+                    this._suitRefreshTimer = null;
+                }
             },
 
             // Log viewer functions
