@@ -32,6 +32,7 @@ class TableChoice:
     target: str | None  # None -> caller falls back to binary policy
     rule: str
     candidates: list[tuple[str, float]] = field(default_factory=list)
+    unfit: list[str] = field(default_factory=list)  # excluded: can't ever fit budget
 
 
 def _median_latency_s(entry: dict) -> float | None:
@@ -78,21 +79,37 @@ def choose(
     residency_epsilon: float = 0.02,
     max_interactive_median_q_time_s: float = 30.0,
     default_target: str | None = None,
+    fit_budget_gb: float | None = None,
 ) -> TableChoice:
     """Pick a target from the suitability table. Never raises.
 
     `models` is SuitabilityStore.all_models() (or a snapshot); `resident_ids`
-    are currently-loaded model ids from the pool.
+    are currently-loaded model ids from the pool. `fit_budget_gb`, when
+    given, is the never-fits ceiling (headroom above pinned/resident
+    memory) computed by the caller; a candidate whose `size_gb` exceeds it
+    can never load and is excluded (recorded in `TableChoice.unfit`).
+    Missing size_gb or fit_budget_gb means no filtering (fail-open).
     """
+    unfit_ids: set[str] = set()
 
     def interactive(model_id: str) -> bool:
         lat = _median_latency_s(models.get(model_id, {}))
         return lat is None or lat <= max_interactive_median_q_time_s
 
+    def fits(model_id: str, entry: dict) -> bool:
+        if fit_budget_gb is None:
+            return True
+        size_gb = entry.get("size_gb")
+        if size_gb is None or size_gb <= fit_budget_gb:
+            return True
+        unfit_ids.add(model_id)
+        return False
+
     def eligible(model_id: str, entry: dict) -> bool:
         return (
             entry.get("role") == "chat"
             and entry.get("health", {}).get("status") == "ok"
+            and fits(model_id, entry)
             and interactive(model_id)
         )
 
@@ -107,7 +124,9 @@ def choose(
         scored.sort(key=lambda t: t[1], reverse=True)
         if scored:
             target = _residency_pick(scored, resident_ids, residency_epsilon)
-            return TableChoice(target, f"table:escalate>={escalate_at}", scored[:5])
+            return TableChoice(
+                target, f"table:escalate>={escalate_at}", scored[:5], sorted(unfit_ids)
+            )
         # fall through to axis dispatch if no overall scores exist
 
     axis = axis_for(features)
@@ -121,12 +140,12 @@ def choose(
 
     if ranked:
         target = _residency_pick(ranked, resident_ids, residency_epsilon)
-        return TableChoice(target, f"table:{axis}", ranked[:5])
+        return TableChoice(target, f"table:{axis}", ranked[:5], sorted(unfit_ids))
 
     if default_target:
-        return TableChoice(default_target, "table:generalist", [])
+        return TableChoice(default_target, "table:generalist", [], sorted(unfit_ids))
 
-    return TableChoice(None, "table:no_candidates", [])
+    return TableChoice(None, "table:no_candidates", [], sorted(unfit_ids))
 
 
 def _residency_pick(

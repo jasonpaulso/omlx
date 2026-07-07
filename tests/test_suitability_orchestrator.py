@@ -24,9 +24,7 @@ class FakePool:
 def store_env(tmp_path, monkeypatch):
     """init_suitability against a tmp store path and a fake pool."""
     pool = FakePool({"big-model": 60_000_000_000, "small-model": 2_000_000_000})
-    store = suitability.init_suitability(
-        pool, path=str(tmp_path / "suitability.json")
-    )
+    store = suitability.init_suitability(pool, path=str(tmp_path / "suitability.json"))
     yield store, pool
     suitability.shutdown_suitability()
 
@@ -59,9 +57,7 @@ class TestInit:
         assert ab._run_status_sink is suitability._on_run_status
 
     def test_shutdown_unregisters(self, tmp_path):
-        suitability.init_suitability(
-            FakePool({}), path=str(tmp_path / "s.json")
-        )
+        suitability.init_suitability(FakePool({}), path=str(tmp_path / "s.json"))
         suitability.shutdown_suitability()
         assert ab._result_sink is None
         assert ab._run_status_sink is None
@@ -151,3 +147,80 @@ class TestSweep:
         status = suitability.start_sweep(["small-model"], {"mmlu": 10}, pool)
         assert status["queued"] == ["small-model"]
         assert status["skipped"] == {}
+
+
+class TestSweepOnlyMissing:
+    def test_only_missing_skips_fully_covered_model(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+
+        suitability._harvest_result(
+            _result(model_id="big-model", bench="mmlu_pro", baseline=True)
+        )
+        suitability._harvest_result(
+            _result(model_id="big-model", bench="livecodebench", baseline=True)
+        )
+
+        status = suitability.start_sweep(
+            ["big-model"],
+            {"mmlu_pro": 30, "livecodebench": 10},
+            pool,
+            only_missing=True,
+        )
+        assert queued == []
+        assert status["queued"] == []
+        assert status["skipped"] == {"big-model": "already_scored"}
+
+    def test_only_missing_queues_partially_covered_model(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+
+        # Only one of the two requested benches has a baseline record.
+        suitability._harvest_result(
+            _result(model_id="big-model", bench="mmlu_pro", baseline=True)
+        )
+
+        status = suitability.start_sweep(
+            ["big-model"],
+            {"mmlu_pro": 30, "livecodebench": 10},
+            pool,
+            only_missing=True,
+        )
+        assert [q.model_id for q in queued] == ["big-model"]
+        assert status["queued"] == ["big-model"]
+        assert status["skipped"] == {}
+
+    def test_only_missing_false_ignores_coverage(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+
+        suitability._harvest_result(
+            _result(model_id="big-model", bench="mmlu_pro", baseline=True)
+        )
+
+        status = suitability.start_sweep(
+            ["big-model"], {"mmlu_pro": 30}, pool, only_missing=False
+        )
+        assert status["queued"] == ["big-model"]
+        assert status["skipped"] == {}
+
+    def test_only_missing_non_chat_still_skipped_by_role(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+
+        status = suitability.start_sweep(
+            ["small-model"], {"mmlu_pro": 30}, pool, only_missing=True
+        )
+        assert status["skipped"] == {"small-model": "draft_companion"}
