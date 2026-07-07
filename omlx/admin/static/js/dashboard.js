@@ -119,6 +119,7 @@
                 ui: { language: 'en' },
                 idle_timeout: { idle_timeout_seconds: null },
                 system: { total_memory_bytes: 0, total_memory: '', auto_model_memory: '', ssd_total_bytes: 0, ssd_total: '' },
+                routing: { enabled: false, virtual_model_id: 'auto', telemetry_enabled: true, table_dispatch_enabled: false, table_dispatch_default_target: null, targets_vision: null },
             },
 
             // Cache slider (0-100%)
@@ -181,6 +182,7 @@
                 ctKwargEntries: [],
                 is_diffusion_model: false,
                 trust_remote_code: false,
+                enable_routing: false,
             },
             savingModelSettings: false,
             loadingGenDefaults: false,
@@ -794,6 +796,7 @@
                             integrations: { ...this.globalSettings.integrations, ...data.integrations },
                             idle_timeout: { ...this.globalSettings.idle_timeout, ...data.idle_timeout },
                             system: { ...this.globalSettings.system, ...data.system },
+                            routing: { ...this.globalSettings.routing, ...data.routing },
                         };
                         this.globalSettings.ui = data.ui || { language: 'en' };
 
@@ -1517,6 +1520,7 @@
                     ctKwargEntries,
                     is_diffusion_model: isDiffusion,
                     trust_remote_code: s.trust_remote_code || false,
+                    enable_routing: s.enable_routing || false,
                 };
             },
 
@@ -2062,6 +2066,7 @@
                                     ? parseInt(this.modelSettings.vlm_mtp_draft_block_size)
                                     : null,
                                 trust_remote_code: this.modelSettings.trust_remote_code,
+                                enable_routing: this.modelSettings.enable_routing,
                             };
                             if (isDiffusion) {
                                 Object.assign(payload, {
@@ -2426,6 +2431,37 @@
                     }
                 } catch (err) {
                     console.error('Failed to save Claude Code settings:', err);
+                }
+            },
+
+            async saveRoutingSettings() {
+                // Routing settings take effect on server restart (the RoutingService
+                // is built once at startup). Surface the restart notice returned by
+                // the API so the operator knows a restart is pending.
+                try {
+                    const r = this.globalSettings.routing;
+                    const response = await fetch('/admin/api/global-settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            routing_enabled: r.enabled,
+                            routing_virtual_model_id: r.virtual_model_id || 'auto',
+                            routing_telemetry_enabled: r.telemetry_enabled,
+                            routing_table_dispatch_enabled: r.table_dispatch_enabled,
+                            routing_table_dispatch_default_target: r.table_dispatch_default_target || null,
+                            routing_targets_vision: r.targets_vision || null,
+                        }),
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.saveSuccess = true;
+                        this.saveMessage = data.message || 'Routing settings saved.';
+                        setTimeout(() => { this.saveSuccess = false; }, 6000);
+                    } else {
+                        console.error('Failed to save routing settings');
+                    }
+                } catch (err) {
+                    console.error('Failed to save routing settings:', err);
                 }
             },
 

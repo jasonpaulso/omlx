@@ -158,6 +158,8 @@ class ModelSettingsRequest(BaseModel):
     is_hidden: bool | None = None
     # Security: per-model opt-in for trust_remote_code (issue #926)
     trust_remote_code: bool | None = None
+    # Semantic-routing opt-in: model is eligible as an "auto" table-dispatch target
+    enable_routing: bool | None = None
 
 
 class CreateProfileRequest(BaseModel):
@@ -303,6 +305,14 @@ class GlobalSettingsRequest(BaseModel):
     # Auth settings
     api_key: str | None = None
     skip_api_key_verification: bool | None = None
+
+    # Semantic routing (see docs/ROUTING.md). All take effect on restart.
+    routing_enabled: bool | None = None
+    routing_virtual_model_id: str | None = None
+    routing_telemetry_enabled: bool | None = None
+    routing_table_dispatch_enabled: bool | None = None
+    routing_table_dispatch_default_target: str | None = None
+    routing_targets_vision: str | None = None
 
 
 class HFDownloadRequest(BaseModel):
@@ -2524,6 +2534,8 @@ async def update_model_settings(
         current_settings.is_hidden = request.is_hidden
     if "trust_remote_code" in sent:
         current_settings.trust_remote_code = bool(request.trust_remote_code)
+    if "enable_routing" in sent:
+        current_settings.enable_routing = bool(request.enable_routing)
 
     if is_diffusion_model:
         _sanitize_diffusion_model_settings(current_settings)
@@ -3326,6 +3338,16 @@ async def get_global_settings(is_admin: bool = Depends(require_admin)):
         "idle_timeout": {
             "idle_timeout_seconds": global_settings.idle_timeout.idle_timeout_seconds,
         },
+        "routing": {
+            "enabled": global_settings.routing.enabled,
+            "virtual_model_id": global_settings.routing.virtual_model_id,
+            "telemetry_enabled": global_settings.routing.telemetry.enabled,
+            "table_dispatch_enabled": global_settings.routing.table_dispatch.enabled,
+            "table_dispatch_default_target": (
+                global_settings.routing.table_dispatch.default_target
+            ),
+            "targets_vision": global_settings.routing.targets.get("vision"),
+        },
     }
 
 
@@ -3358,6 +3380,8 @@ async def update_global_settings(
 
     # Track which settings were applied at runtime
     runtime_applied: list[str] = []
+    # Track settings persisted but needing a restart to take effect
+    restart_required: list[str] = []
     pending_embedding_batch_size: int | None = None
     previous_embedding_batch_size: int | None = None
 
@@ -3915,6 +3939,51 @@ async def update_global_settings(
         )
         runtime_applied.append("skip_api_key_verification")
 
+    # Apply routing settings (Restart required — the RoutingService is built
+    # once at startup and gated on routing.enabled; see docs/ROUTING.md).
+    routing_changed = False
+    if request.routing_enabled is not None:
+        global_settings.routing.enabled = request.routing_enabled
+        routing_changed = True
+    if request.routing_virtual_model_id is not None:
+        vid = request.routing_virtual_model_id.strip()
+        if vid:  # never allow blanking the virtual id
+            global_settings.routing.virtual_model_id = vid
+            routing_changed = True
+    if request.routing_telemetry_enabled is not None:
+        global_settings.routing.telemetry.enabled = request.routing_telemetry_enabled
+        routing_changed = True
+    if request.routing_table_dispatch_enabled is not None:
+        global_settings.routing.table_dispatch.enabled = (
+            request.routing_table_dispatch_enabled
+        )
+        routing_changed = True
+    if "routing_table_dispatch_default_target" in request.model_fields_set:
+        v = (request.routing_table_dispatch_default_target or "").strip()
+        global_settings.routing.table_dispatch.default_target = v or None
+        routing_changed = True
+    if "routing_targets_vision" in request.model_fields_set:
+        v = (request.routing_targets_vision or "").strip()
+        if v:
+            global_settings.routing.targets["vision"] = v
+        else:
+            global_settings.routing.targets.pop("vision", None)
+        routing_changed = True
+
+    if routing_changed:
+        restart_required.append("routing")
+        logger.info(
+            "Routing settings updated (restart required): enabled=%s, "
+            "virtual_id=%s, telemetry=%s, table_dispatch=%s, default_target=%s, "
+            "vision=%s",
+            global_settings.routing.enabled,
+            global_settings.routing.virtual_model_id,
+            global_settings.routing.telemetry.enabled,
+            global_settings.routing.table_dispatch.enabled,
+            global_settings.routing.table_dispatch.default_target,
+            global_settings.routing.targets.get("vision"),
+        )
+
     if pending_embedding_batch_size is not None:
         previous_embedding_batch_size = global_settings.scheduler.embedding_batch_size
         global_settings.scheduler.embedding_batch_size = pending_embedding_batch_size
@@ -3950,10 +4019,16 @@ async def update_global_settings(
     # Build response message
     message = "Settings saved successfully."
 
+    if restart_required:
+        message = "Settings saved. Restart the server to apply: " + ", ".join(
+            restart_required
+        )
+
     return {
         "success": True,
         "message": message,
         "runtime_applied": runtime_applied,
+        "restart_required": restart_required,
     }
 
 

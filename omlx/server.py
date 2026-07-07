@@ -430,9 +430,7 @@ async def lifespan(app: FastAPI):
             pool = _server_state.engine_pool
             if pool is None:
                 return set()
-            return {
-                m["id"] for m in pool.get_status()["models"] if m.get("loaded")
-            }
+            return {m["id"] for m in pool.get_status()["models"] if m.get("loaded")}
 
         def _fit_budget_gb() -> Optional[float]:
             # Never-fits bound for table dispatch: ceiling minus pinned
@@ -454,8 +452,28 @@ async def lifespan(app: FastAPI):
             except Exception:  # pragma: no cover - status shape drift
                 return None
 
+        def _enabled_model_ids() -> set:
+            # Per-model routing opt-in (enable_routing). Empty set -> nobody
+            # opted in -> the table gate stays inert (fail-open). Reads the
+            # persisted flag directly, so it is independent of the baseline
+            # bypass used during suitability sweeps.
+            mgr = _server_state.settings_manager
+            if mgr is None:
+                return set()
+            try:
+                return {
+                    mid
+                    for mid, s in mgr.get_all_settings().items()
+                    if getattr(s, "enable_routing", False)
+                }
+            except Exception:  # pragma: no cover - never break dispatch
+                return set()
+
         service.set_table_sources(
-            _suitability_models, _resident_model_ids, _fit_budget_gb
+            _suitability_models,
+            _resident_model_ids,
+            _fit_budget_gb,
+            _enabled_model_ids,
         )
         _server_state.routing_service = service
         router_id = (
@@ -3245,9 +3263,9 @@ async def create_chat_completion(
         routing_service is not None
         and request.model == routing_service.settings.virtual_model_id
     ):
-        routing_request_id = http_request.headers.get(
-            "x-request-id"
-        ) or f"route-{uuid.uuid4().hex[:12]}"
+        routing_request_id = (
+            http_request.headers.get("x-request-id") or f"route-{uuid.uuid4().hex[:12]}"
+        )
         route_decision = await routing_service.route_chat_request(
             messages=request.messages,
             has_tools=bool(request.tools),
@@ -5245,9 +5263,9 @@ async def create_anthropic_message(
         routing_service is not None
         and request.model == routing_service.settings.virtual_model_id
     ):
-        routing_request_id = http_request.headers.get(
-            "x-request-id"
-        ) or f"route-{uuid.uuid4().hex[:12]}"
+        routing_request_id = (
+            http_request.headers.get("x-request-id") or f"route-{uuid.uuid4().hex[:12]}"
+        )
         route_decision = await routing_service.route_chat_request(
             messages=request.messages,
             has_tools=bool(request.tools),

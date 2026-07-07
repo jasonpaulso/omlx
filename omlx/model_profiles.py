@@ -85,6 +85,9 @@ EXCLUDED_FROM_PROFILES = frozenset(
         "ttl_seconds",
         # Security flag must be explicit per model — never propagated via profiles.
         "trust_remote_code",
+        # Routing eligibility is a property of the base model, not a sampling
+        # variant — a profile is served on the same engine and must not carry it.
+        "enable_routing",
     }
 )
 

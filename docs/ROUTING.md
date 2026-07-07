@@ -130,6 +130,48 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
 
 Enable order in practice: turn on `routing` (binary) first, run a roster sweep to populate the table, verify it, then flip `table_dispatch.enabled`.
 
+### UI-configurable subset
+
+The **Global Settings** admin tab has a *Semantic Routing* panel exposing the
+knobs an operator flips at runtime: `enabled`, `virtual_model_id`,
+`telemetry.enabled`, `table_dispatch.enabled`, `table_dispatch.default_target`,
+and `targets.vision`. The panel is badged **restart-required** — the POST
+persists to `settings.json` immediately but the `RoutingService` is built once
+at startup, so a restart is needed to pick the changes up (`POST
+/admin/api/global-settings` returns them under `restart_required`, not
+`runtime_applied`). The other fields (policy thresholds, `router_model`, the
+`small`/`big` targets, `residency_epsilon`) remain settings.json-only.
+
+### Per-model routing gate (`enable_routing`)
+
+A per-model **opt-in** flag (Model Settings → *Enable Semantic Routing*, stored
+in `model_settings.json`) gates whether a model is eligible as an N-way
+table-dispatch target. Key semantics:
+
+- **Gate scope is the ranked pool only.** `table.choose()`'s `eligible()`
+  predicate drops any candidate not in the enabled set (recorded in the new
+  `TableChoice.disabled` / telemetry `disabled` field). Explicitly-named
+  targets — `table_dispatch.default_target`, `policy.fail_open_target`,
+  `targets.vision`, and the binary `small`/`big` — **bypass the gate**: naming
+  a model by id in config *is* the opt-in, which keeps fail-open (decision #7)
+  from ever pointing at a disabled model.
+- **Empty set = inert.** If *no* model has `enable_routing=True`, the gate does
+  nothing and dispatch behaves exactly as before. This makes shipping the
+  feature default-off a no-op until the operator opts models in one by one —
+  no silent collapse to `default_target` on the first restart.
+- **Read live, baseline-independent.** The enabled set is computed per routing
+  decision from `ModelSettingsManager.get_all_settings()`, which reads the
+  persisted flag directly and is *not* subject to the `set_baseline_ids`
+  bypass. So a model held out by an in-flight suitability sweep keeps its
+  operator-set eligibility.
+- **Never in a profile.** `enable_routing` is in `EXCLUDED_FROM_PROFILES`: a
+  profile is a sampling variant served on the same engine, so routing
+  eligibility belongs to the base model, not the profile.
+
+Like the rest of `routing`, the gate is read fresh per request from a getter
+wired via `set_table_sources(..., enabled_getter=...)`; no restart needed for
+`enable_routing` edits (unlike the global panel).
+
 ## Dev runbook (localhost)
 
 ```bash
@@ -178,19 +220,22 @@ pytest -q                                      # full fast suite
 - **Escalation 507s** mean the big/frontier target can't fit alongside what's pinned/resident. Either free room (unpin) or point `big` at a smaller resident model. Fail-open still routes there, so the 507 comes from the engine, not routing.
 - **A 507'd routed request leaves a telemetry row pending** (decision recorded, no outcome) until shutdown flush. Harmless; an orphan-flush timer is a cheap future polish.
 - **Tables don't travel between machines.** Copying `suitability.json` across hosts imports wrong timings and possibly wrong fit. Sweep each host.
-- **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect.
+- **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect — including everything in the Global Settings *Semantic Routing* panel (it persists immediately but the service is built at boot). The **exception is `enable_routing`**: the per-model gate is read live per request, so toggling it in Model Settings takes effect on the next routed request with no restart.
+- **The gate is silent when unused.** If you enable `table_dispatch` but forget to opt any model in with `enable_routing`, nothing changes — the empty enabled set makes the gate inert (fail-open), *not* a collapse to `default_target`. To see which models a decision skipped for being un-opted-in, read the `disabled` field in `routing_decisions.jsonl`.
 
 ## Roadmap
 
-Done: M1, M2, M3, M4.1.
+Done: M1, M2, M3, M4.1, **M4.2** (Anthropic `/v1/messages` hook, commit
+`8e62609`), plus fit-aware dispatch, telemetry orphan-flush, and gap-fill
+sweeps (commit `140b69a`). **Routing admin UI** (Global Settings routing panel
++ per-model `enable_routing` gate) landed alongside this doc revision.
 
 Remaining M4 (rough priority):
 
-1. **`/v1/messages` (Anthropic) routing hook** — the Anthropic path re-implements resolve/dispatch independently; either duplicate the hook there or extract a shared helper first.
-2. **Settings-delta rescoring** — re-run a slice with one setting changed (draft model, thinking, KV quant) and report the accuracy/speed delta per model. Turns the careless-config problem into a measured tuning assistant, and validates spec-decode losslessness per model.
-3. **Passive idle-time sweeps** — the hardest 20% (idle detection + interruption semantics).
-4. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
-5. **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model).
+1. **Settings-delta rescoring** — re-run a slice with one setting changed (draft model, thinking, KV quant) and report the accuracy/speed delta per model. Turns the careless-config problem into a measured tuning assistant, and validates spec-decode losslessness per model.
+2. **Passive idle-time sweeps** — the hardest 20% (idle detection + interruption semantics).
+3. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
+4. **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model). Note: the routing admin UI and `enable_routing` gate are fork-only polish, not part of a minimal upstream patch.
 
 ## Provenance
 

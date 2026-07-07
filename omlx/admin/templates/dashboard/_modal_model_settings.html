@@ -543,6 +543,22 @@
                                 </div>
                             </div>
 
+                            <!-- Enable Semantic Routing (opt-in as an "auto" dispatch target) -->
+                            <div class="p-4 bg-neutral-50 rounded-xl border border-neutral-100">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <span class="text-sm font-medium text-neutral-700">Enable Semantic Routing</span>
+                                        <p class="text-xs text-neutral-500 mt-0.5">Let the <code class="text-[11px] px-1 py-0.5 bg-neutral-200 rounded">auto</code> router dispatch here via table dispatch. Off = skipped as a ranked candidate even if the suitability table rates it best. Does not affect reaching this model by its own id. If no model is enabled, the gate is inert.</p>
+                                    </div>
+                                    <button type="button" @click="modelSettings.enable_routing = !modelSettings.enable_routing"
+                                            :class="modelSettings.enable_routing ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative flex-shrink-0 w-11 h-6 mt-0.5 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="modelSettings.enable_routing ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                            </div>
+
                             <!-- Chat Template Kwargs -->
                             <div class="p-4 bg-neutral-50 rounded-xl space-y-3">
                                 <div class="flex items-center justify-between">

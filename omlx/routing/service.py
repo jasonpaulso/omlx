@@ -31,6 +31,7 @@ EngineGetter = Callable[[str], Awaitable[Any]]
 ModelsGetter = Callable[[], dict[str, dict]]
 ResidentGetter = Callable[[], set[str]]
 FitBudgetGetter = Callable[[], float | None]
+EnabledGetter = Callable[[], set[str]]
 
 # Orphan flush (P1-D): a 507/disconnected request never calls
 # record_outcome, so its pending row would otherwise sit in memory until
@@ -50,6 +51,7 @@ class RouteDecision:
     classify_ms: float
     candidates: list[tuple[str, float]] | None = None  # table dispatch only
     unfit: list[str] | None = None  # table dispatch only: excluded, can't fit
+    disabled: list[str] | None = None  # table dispatch only: routing opt-out
 
     @property
     def header_value(self) -> str:
@@ -119,6 +121,7 @@ class RoutingService:
         self._models_getter: ModelsGetter | None = None
         self._resident_getter: ResidentGetter | None = None
         self._fit_budget_getter: FitBudgetGetter | None = None
+        self._enabled_getter: EnabledGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
@@ -135,6 +138,7 @@ class RoutingService:
         models_getter: ModelsGetter,
         resident_getter: ResidentGetter,
         fit_budget_getter: FitBudgetGetter | None = None,
+        enabled_getter: EnabledGetter | None = None,
     ) -> None:
         """Wire suitability-store and pool-residency snapshots (M3 N-way).
 
@@ -145,10 +149,16 @@ class RoutingService:
         in GB -- the ceiling minus pinned/resident memory, computed by the
         caller from EnginePool.get_status(). None (absent or returning
         None) disables fit filtering; dispatch behaves exactly as before.
+
+        `enabled_getter` (optional) returns the set of model ids the operator
+        has opted in as routing targets (per-model `enable_routing`). An
+        empty set means nobody opted in -> the gate is inert and every chat
+        model stays a candidate (fail-open). None (absent) is equivalent.
         """
         self._models_getter = models_getter
         self._resident_getter = resident_getter
         self._fit_budget_getter = fit_budget_getter
+        self._enabled_getter = enabled_getter
 
     async def route_chat_request(
         self,
@@ -232,6 +242,7 @@ class RoutingService:
                 classify_ms=(time.perf_counter() - start) * 1000,
                 candidates=table_choice.candidates or None,
                 unfit=table_choice.unfit or None,
+                disabled=table_choice.disabled or None,
             )
             self._record_decision(decision, request_id, endpoint, stream)
             return decision
@@ -279,6 +290,7 @@ class RoutingService:
             fit_budget_gb = (
                 self._fit_budget_getter() if self._fit_budget_getter else None
             )
+            enabled_ids = self._enabled_getter() if self._enabled_getter else None
             return dispatch_table.choose(
                 features,
                 models,
@@ -288,6 +300,7 @@ class RoutingService:
                 max_interactive_median_q_time_s=cfg.max_interactive_median_q_time_s,
                 default_target=generalist,
                 fit_budget_gb=fit_budget_gb,
+                enabled_ids=enabled_ids,
             )
         except Exception as e:  # noqa: BLE001 - dispatch must never 5xx
             logger.warning("table dispatch failed, falling back to binary: %s", e)
@@ -367,6 +380,7 @@ class RoutingService:
                 else None
             ),
             "unfit": decision.unfit if decision.unfit else None,
+            "disabled": decision.disabled if decision.disabled else None,
             "outcome": None,
         }
 

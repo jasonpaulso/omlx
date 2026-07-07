@@ -32,7 +32,8 @@ class TableChoice:
     target: str | None  # None -> caller falls back to binary policy
     rule: str
     candidates: list[tuple[str, float]] = field(default_factory=list)
-    unfit: list[str] = field(default_factory=list)  # excluded: can't ever fit budget
+    unfit: list[str] = field(default_factory=list)  # excluded: can't ever fit
+    disabled: list[str] = field(default_factory=list)  # excluded: not opted in budget
 
 
 def _median_latency_s(entry: dict) -> float | None:
@@ -80,6 +81,7 @@ def choose(
     max_interactive_median_q_time_s: float = 30.0,
     default_target: str | None = None,
     fit_budget_gb: float | None = None,
+    enabled_ids: set[str] | None = None,
 ) -> TableChoice:
     """Pick a target from the suitability table. Never raises.
 
@@ -89,8 +91,18 @@ def choose(
     memory) computed by the caller; a candidate whose `size_gb` exceeds it
     can never load and is excluded (recorded in `TableChoice.unfit`).
     Missing size_gb or fit_budget_gb means no filtering (fail-open).
+
+    `enabled_ids`, when non-empty, is the set of models the operator has
+    opted in as routing targets (per-model `enable_routing`); a ranked
+    candidate outside it is excluded (recorded in `TableChoice.disabled`).
+    An empty or None set means no gating -- if nobody has opted in, the
+    gate is inert and dispatch behaves as before (fail-open). The gate
+    only filters the ranked pool; the caller's `default_target` and
+    fail-open path are explicitly-named and bypass it.
     """
     unfit_ids: set[str] = set()
+    disabled_ids: set[str] = set()
+    gate = bool(enabled_ids)  # empty/None -> gate inert (opt-in not configured)
 
     def interactive(model_id: str) -> bool:
         lat = _median_latency_s(models.get(model_id, {}))
@@ -105,12 +117,19 @@ def choose(
         unfit_ids.add(model_id)
         return False
 
+    def enabled(model_id: str) -> bool:
+        if not gate or model_id in enabled_ids:  # type: ignore[operator]
+            return True
+        disabled_ids.add(model_id)
+        return False
+
     def eligible(model_id: str, entry: dict) -> bool:
         return (
             entry.get("role") == "chat"
             and entry.get("health", {}).get("status") == "ok"
             and fits(model_id, entry)
             and interactive(model_id)
+            and enabled(model_id)
         )
 
     # Escalation tier: complexity band beats axis specialization.
@@ -125,7 +144,11 @@ def choose(
         if scored:
             target = _residency_pick(scored, resident_ids, residency_epsilon)
             return TableChoice(
-                target, f"table:escalate>={escalate_at}", scored[:5], sorted(unfit_ids)
+                target,
+                f"table:escalate>={escalate_at}",
+                scored[:5],
+                sorted(unfit_ids),
+                sorted(disabled_ids),
             )
         # fall through to axis dispatch if no overall scores exist
 
@@ -140,12 +163,22 @@ def choose(
 
     if ranked:
         target = _residency_pick(ranked, resident_ids, residency_epsilon)
-        return TableChoice(target, f"table:{axis}", ranked[:5], sorted(unfit_ids))
+        return TableChoice(
+            target, f"table:{axis}", ranked[:5], sorted(unfit_ids), sorted(disabled_ids)
+        )
 
     if default_target:
-        return TableChoice(default_target, "table:generalist", [], sorted(unfit_ids))
+        return TableChoice(
+            default_target,
+            "table:generalist",
+            [],
+            sorted(unfit_ids),
+            sorted(disabled_ids),
+        )
 
-    return TableChoice(None, "table:no_candidates", [], sorted(unfit_ids))
+    return TableChoice(
+        None, "table:no_candidates", [], sorted(unfit_ids), sorted(disabled_ids)
+    )
 
 
 def _residency_pick(

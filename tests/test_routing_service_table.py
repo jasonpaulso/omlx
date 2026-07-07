@@ -108,9 +108,7 @@ async def test_empty_table_falls_back_to_binary(tmp_path):
 
 @pytest.mark.asyncio
 async def test_override_routes_to_generalist_spine(tmp_path):
-    svc = make_service(
-        make_settings(tmp_path, default_target="general-model"), MODELS
-    )
+    svc = make_service(make_settings(tmp_path, default_target="general-model"), MODELS)
     d = await route(svc, has_tools=True)
     assert d.target == "general-model"
     assert d.rule_fired == "override:tools"
@@ -135,4 +133,31 @@ async def test_broken_sources_fall_back_to_binary(tmp_path):
     svc.set_table_sources(boom, boom)
     d = await route(svc)
     assert d.target == "small-model"  # never 5xx, never raise
+    await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_enable_routing_gate_skips_disabled_model(tmp_path):
+    svc = make_service(make_settings(tmp_path), MODELS)
+    # Only general-model opted in; the code leader (coder-model) is gated out.
+    svc.set_table_sources(
+        lambda: MODELS, lambda: set(), enabled_getter=lambda: {"general-model"}
+    )
+    d = await route(svc)
+    assert d.target == "general-model"
+    assert d.rule_fired == "table:code"
+    assert d.disabled == ["coder-model"]
+    await svc.close()
+    rows = [json.loads(x) for x in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert rows[0]["disabled"] == ["coder-model"]
+
+
+@pytest.mark.asyncio
+async def test_enable_routing_empty_set_is_noop(tmp_path):
+    svc = make_service(make_settings(tmp_path), MODELS)
+    # Nobody opted in -> gate inert -> axis leader still wins, nothing gated.
+    svc.set_table_sources(lambda: MODELS, lambda: set(), enabled_getter=lambda: set())
+    d = await route(svc)
+    assert d.target == "coder-model"
+    assert d.disabled is None
     await svc.close()

@@ -210,6 +210,14 @@ class ModelSettings:
     is_default: bool = False  # Only one model can be default
     is_hidden: bool = False  # Hidden from /v1/models (still shown, badged, in admin)
 
+    # Semantic-routing opt-in. When True, the "auto" router may dispatch here
+    # via N-way table dispatch. Off by default: a model is skipped as a ranked
+    # candidate even if the suitability table rates it best. Does NOT affect
+    # reachability by concrete id, nor explicitly-named targets (small/big/
+    # vision/default_target/fail_open bypass the gate). If NO model is enabled,
+    # the gate is inert and dispatch behaves as before. See docs/ROUTING.md.
+    enable_routing: bool = False
+
     # Security: opt-in per model. When True, mlx-lm/mlx-vlm/mlx-embeddings/reranker
     # loaders are allowed to execute custom Python from the model repository
     # (modeling_*.py, tokenization_*.py). Off by default — see issue #926.

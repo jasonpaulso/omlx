@@ -129,9 +129,7 @@ class TestChoose:
 
     def test_generalist_fallback_when_axis_empty(self):
         models = {"m": entry(categories={"knowledge": 0.8})}
-        c = choose(
-            feats(code=True), models, set(), escalate_at=4, default_target="gen"
-        )
+        c = choose(feats(code=True), models, set(), escalate_at=4, default_target="gen")
         assert c.target == "gen"
         assert c.rule == "table:generalist"
 
@@ -156,3 +154,81 @@ class TestChoose:
     def test_choice_dataclass_defaults(self):
         c = TableChoice(None, "x")
         assert c.candidates == []
+        assert c.disabled == []
+
+
+class TestEnableRoutingGate:
+    """Per-model enable_routing gate on the ranked candidate pool."""
+
+    def _models(self):
+        return {
+            "coder": entry(categories={"code": 0.9, "knowledge": 0.5}),
+            "general": entry(categories={"code": 0.6, "knowledge": 0.8}),
+        }
+
+    def test_empty_enabled_is_noop(self):
+        # Nobody opted in -> gate inert -> best model wins as before.
+        for enabled in (set(), None):
+            c = choose(
+                feats(code=True),
+                self._models(),
+                set(),
+                escalate_at=4,
+                enabled_ids=enabled,
+            )
+            assert c.target == "coder"
+            assert c.disabled == []
+
+    def test_disabled_leader_skipped_next_enabled_wins(self):
+        c = choose(
+            feats(code=True),
+            self._models(),
+            set(),
+            escalate_at=4,
+            enabled_ids={"general"},
+        )
+        assert c.target == "general"
+        assert c.rule == "table:code"
+        assert c.disabled == ["coder"]
+
+    def test_all_disabled_falls_to_default_target_which_bypasses_gate(self):
+        # No ranked candidate is enabled -> named default_target wins even
+        # though it is not itself in enabled_ids (explicit config = opt-in).
+        c = choose(
+            feats(code=True),
+            self._models(),
+            set(),
+            escalate_at=4,
+            enabled_ids={"nonexistent"},
+            default_target="gen-spine",
+        )
+        assert c.target == "gen-spine"
+        assert c.rule == "table:generalist"
+        assert sorted(c.disabled) == ["coder", "general"]
+
+    def test_escalation_tier_respects_gate(self):
+        models = {
+            "big": entry(categories={"code": 0.9, "knowledge": 0.9}),
+            "mid": entry(categories={"code": 0.7, "knowledge": 0.7}),
+        }
+        c = choose(
+            feats(complexity=5),
+            models,
+            set(),
+            escalate_at=4,
+            enabled_ids={"mid"},
+        )
+        assert c.target == "mid"
+        assert c.rule == "table:escalate>=4"
+        assert c.disabled == ["big"]
+
+    def test_enabled_leader_still_wins(self):
+        c = choose(
+            feats(code=True),
+            self._models(),
+            set(),
+            escalate_at=4,
+            enabled_ids={"coder", "general"},
+        )
+        assert c.target == "coder"
+        assert c.disabled == []
