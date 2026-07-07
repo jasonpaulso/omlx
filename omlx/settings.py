@@ -893,6 +893,44 @@ class RoutingTableDispatchSettings:
 
 
 @dataclass
+class RoutingIdleSweepSettings:
+    """Passive idle-time suitability sweeps (M4.4).
+
+    When enabled, a background loop runs gap-fill suitability benchmarks
+    while the server is quiet (no request for `idle_after_s`). A real
+    request arriving mid-sweep aborts it immediately and is served. Off by
+    default; benching is disruptive, so this is strictly opt-in."""
+
+    enabled: bool = False
+    idle_after_s: float = 600.0  # quiet time before a sweep may start
+    poll_interval_s: float = 30.0  # how often the loop re-checks idleness
+    benchmarks: dict[str, int] = field(
+        default_factory=lambda: {"mmlu_pro": 30, "livecodebench": 10}
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "idle_after_s": self.idle_after_s,
+            "poll_interval_s": self.poll_interval_s,
+            "benchmarks": dict(self.benchmarks),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingIdleSweepSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            idle_after_s=data.get("idle_after_s", 600.0),
+            poll_interval_s=data.get("poll_interval_s", 30.0),
+            benchmarks=dict(
+                data.get("benchmarks", {"mmlu_pro": 30, "livecodebench": 10})
+            ),
+        )
+
+
+@dataclass
 class RoutingSettings:
     """Semantic routing settings: classify requests to a virtual model id
     and rewrite them to a concrete target model. Defaults OFF."""
@@ -914,6 +952,9 @@ class RoutingSettings:
     table_dispatch: RoutingTableDispatchSettings = field(
         default_factory=RoutingTableDispatchSettings
     )
+    idle_sweep: RoutingIdleSweepSettings = field(
+        default_factory=RoutingIdleSweepSettings
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -926,6 +967,7 @@ class RoutingSettings:
             "policy": self.policy.to_dict(),
             "telemetry": self.telemetry.to_dict(),
             "table_dispatch": self.table_dispatch.to_dict(),
+            "idle_sweep": self.idle_sweep.to_dict(),
         }
 
     @classmethod
@@ -950,6 +992,7 @@ class RoutingSettings:
             table_dispatch=RoutingTableDispatchSettings.from_dict(
                 data.get("table_dispatch", {})
             ),
+            idle_sweep=RoutingIdleSweepSettings.from_dict(data.get("idle_sweep", {})),
         )
 
 

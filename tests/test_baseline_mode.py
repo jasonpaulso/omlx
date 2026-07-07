@@ -146,7 +146,7 @@ class TestRunAccuracyBenchmarkBaselineMode:
             side_effect=lambda: call_order.append(("clear", None))
         )
 
-        async def fake_get_engine(model_id, force_lm=True):
+        async def fake_get_engine(model_id, force_lm=True, stamp_activity=True):
             call_order.append(("get_engine", model_id))
             return mock_engine
 

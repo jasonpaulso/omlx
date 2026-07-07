@@ -233,6 +233,23 @@ def is_benchmark_active() -> Optional[str]:
     return _current_model if _queue_running else None
 
 
+# Passive idle-sweep tag (M4.4). Set while a background idle-time sweep owns
+# the queue; a real request preempts only a passive sweep, never a
+# user-initiated bench/sweep. Cleared when the idle sweep drains or is aborted.
+_idle_sweep_active: bool = False
+
+
+def set_idle_sweep_active(active: bool) -> None:
+    """Mark (or unmark) the current queue owner as a preemptible idle sweep."""
+    global _idle_sweep_active
+    _idle_sweep_active = active
+
+
+def is_idle_sweep_active() -> bool:
+    """True while a preemptible passive idle sweep owns the bench queue."""
+    return _idle_sweep_active
+
+
 def get_queue_status() -> dict:
     """Get current queue status."""
     last_progress = None
@@ -356,6 +373,30 @@ async def cancel_queue() -> None:
     _current_model = None
 
 
+async def cancel_queue_and_wait(timeout: float = 15.0) -> None:
+    """Cancel the active run and AWAIT its teardown (M4.4 preemption).
+
+    cancel_queue() flips the module globals synchronously and hard-cancels the
+    task, but the run's `finally` (which clears _suppress_ttl and the baseline/
+    override bypass) unwinds asynchronously afterwards. The idle-sweep
+    preemptor must not hand the GPU back to a real request until that teardown
+    has run, so capture the task first and await it.
+    """
+    run = get_run(_current_run_id) if _current_run_id else None
+    task = run.task if run else None
+    await cancel_queue()
+    # Poll task.done() rather than awaiting the (now-cancelled) task directly,
+    # which sidesteps CancelledError propagation into the caller. The task
+    # unwinds in well under a second in practice (one forward pass + finally).
+    if task is not None:
+        waited = 0.0
+        while not task.done() and waited < timeout:
+            await asyncio.sleep(0.05)
+            waited += 0.05
+        if not task.done():
+            logger.warning("Idle-sweep teardown slow; proceeding anyway")
+
+
 # --- SSE ---
 
 
@@ -453,7 +494,12 @@ async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) ->
         # Force LM engine for accuracy benchmarks — text-only tasks
         # don't need VLM and the VLM adapter can produce empty responses.
         load_start = time.perf_counter()
-        engine = await engine_pool.get_engine(request.model_id, force_lm=True)
+        # stamp_activity=False: a bench load must not look like user traffic
+        # (would reset the idle clock) nor trip the idle-sweep preemptor
+        # (which would abort this very sweep). M4.4.
+        engine = await engine_pool.get_engine(
+            request.model_id, force_lm=True, stamp_activity=False
+        )
         load_s = time.perf_counter() - load_start
 
         # Load model sampling settings (skipped in baseline mode — stock

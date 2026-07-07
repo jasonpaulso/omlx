@@ -563,6 +563,23 @@ async def lifespan(app: FastAPI):
 
         ttl_task = asyncio.create_task(_ttl_check_loop())
 
+    # Start passive idle-time sweep loop if enabled (M4.4). Independent of
+    # routing dispatch — it only gap-fills the suitability table while the
+    # server is quiet, and a real request preempts it via the engine-pool
+    # preemptor wired here.
+    idle_sweep_task = None
+    if (
+        isinstance(routing_settings, RoutingSettings)
+        and routing_settings.idle_sweep.enabled
+        and _server_state.engine_pool is not None
+    ):
+        from .admin.idle_sweep import preempt_idle_sweep, run_idle_sweep_loop
+
+        _server_state.engine_pool.set_idle_sweep_preemptor(preempt_idle_sweep)
+        idle_sweep_task = asyncio.create_task(
+            run_idle_sweep_loop(_server_state.engine_pool, routing_settings.idle_sweep)
+        )
+
     # Initialize MCP if config provided
     # Priority: env var > settings.json
     mcp_config = os.environ.get("OMLX_MCP_CONFIG")
@@ -589,6 +606,12 @@ async def lifespan(app: FastAPI):
         ttl_task.cancel()
         try:
             await ttl_task
+        except asyncio.CancelledError:
+            pass
+    if idle_sweep_task is not None:
+        idle_sweep_task.cancel()
+        try:
+            await idle_sweep_task
         except asyncio.CancelledError:
             pass
     if _server_state.process_memory_enforcer is not None:

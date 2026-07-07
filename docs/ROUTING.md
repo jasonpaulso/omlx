@@ -124,6 +124,12 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
     "default_target": null,               // generalist spine; falls back to targets.big
     "residency_epsilon": 0.02,            // prefer a resident model within this score margin
     "max_interactive_median_q_time_s": 30.0  // thinking-lane exclusion threshold
+  },
+  "idle_sweep": {                         // M4.4 passive sweeps; OFF by default
+    "enabled": false,
+    "idle_after_s": 600,                  // quiet time before a sweep may start
+    "poll_interval_s": 30,                // how often the loop re-checks idleness
+    "benchmarks": { "mmlu_pro": 30, "livecodebench": 10 }  // gap-fill (only_missing)
   }
 }
 ```
@@ -222,6 +228,8 @@ pytest -q                                      # full fast suite
 - **Tables don't travel between machines.** Copying `suitability.json` across hosts imports wrong timings and possibly wrong fit. Sweep each host.
 - **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect — including everything in the Global Settings *Semantic Routing* panel (it persists immediately but the service is built at boot). The **exception is `enable_routing`**: the per-model gate is read live per request, so toggling it in Model Settings takes effect on the next routed request with no restart.
 - **The gate is silent when unused.** If you enable `table_dispatch` but forget to opt any model in with `enable_routing`, nothing changes — the empty enabled set makes the gate inert (fail-open), *not* a collapse to `default_target`. To see which models a decision skipped for being un-opted-in, read the `disabled` field in `routing_decisions.jsonl`.
+- **Idle sweeps preempt on the hot path (M4.4).** When `idle_sweep.enabled`, `engine_pool.get_engine()` awaits a preemptor on every *real* request (bench loads pass `stamp_activity=False` and skip it). The preemptor is a no-op unless a passive sweep is live, in which case it `cancel_queue()`s and awaits the run's teardown before the request loads its model — so an interrupting request eats one bench-abort + evict + load (a few seconds) but is never stranded. A *user-initiated* sweep is never preempted (only the passive-sweep tag is). Because this touches the serving path, **validate on a non-production instance before enabling on a busy one**: turn it on, drive traffic mid-sweep, confirm the request is served and the sweep resumes next idle window. The preemption race can't be unit-tested — only the predicate, the tag lifecycle, and the teardown wait are.
+- **A passive sweep re-arms its idle clock.** After a sweep drains (or is preempted), the loop resets `_last_request_monotonic` to now, so the next sweep waits a full `idle_after_s` rather than spinning no-op gap-fills every `poll_interval_s`.
 
 ## Roadmap
 
@@ -230,11 +238,12 @@ Done: M1, M2, M3, M4.1, **M4.2** (Anthropic `/v1/messages` hook, commit
 sweeps (commit `140b69a`). **Routing admin UI** (Global Settings routing panel
 + per-model `enable_routing` gate) landed alongside this doc revision.
 
-Remaining M4 (rough priority):
+Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`) and **M4.4
+passive idle-time sweeps** (this revision).
 
-1. **Settings-delta rescoring** — re-run a slice with one setting changed (draft model, thinking, KV quant) and report the accuracy/speed delta per model. Turns the careless-config problem into a measured tuning assistant, and validates spec-decode losslessness per model.
-2. **Passive idle-time sweeps** — the hardest 20% (idle detection + interruption semantics).
-3. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
+Remaining M4:
+
+1. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
 
 ## M5 — dashboard polish
 

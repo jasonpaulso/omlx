@@ -146,6 +146,14 @@ class EnginePool:
         self._suppress_ttl: bool = False  # Suppress TTL during benchmarks
         self._load_seconds_per_gb_ema: float | None = None
         self._load_time_observations: int = 0
+        # Passive idle-sweep support (M4.4). `_last_request_monotonic` is
+        # stamped by real inference traffic in get_engine (not by bench loads)
+        # so the idle-sweep loop can detect quiescence. `_idle_sweep_preemptor`
+        # is an injected async callable that aborts an in-flight passive sweep
+        # before a real request competes for the GPU; None (default / feature
+        # off) means no preemption. Both wired from the server lifespan.
+        self._last_request_monotonic: float | None = None
+        self._idle_sweep_preemptor: object | None = None
         self.configure_hot_cache_budget()
 
     @property
@@ -450,6 +458,30 @@ class EnginePool:
         """Get list of all discovered model IDs."""
         return list(self._entries.keys())
 
+    def set_idle_sweep_preemptor(self, preemptor: object | None) -> None:
+        """Wire the async callable that aborts an in-flight passive idle sweep
+        before a real request loads a model (M4.4). None disables preemption."""
+        self._idle_sweep_preemptor = preemptor
+
+    @property
+    def last_request_monotonic(self) -> float | None:
+        """time.monotonic() of the last real (non-bench) inference request, or
+        None if none seen since startup. Read by the idle-sweep loop."""
+        return self._last_request_monotonic
+
+    def has_any_active_requests(self) -> bool:
+        """True if any loaded engine currently has in-flight work, or an entry
+        is mid-load. Belt-and-suspenders idle check alongside the timestamp."""
+        for entry in self._entries.values():
+            if getattr(entry, "is_loading", False):
+                return True
+            eng = entry.engine
+            if eng is not None and eng.has_active_requests():
+                return True
+            if getattr(entry, "in_use", 0) > 0:
+                return True
+        return False
+
     def get_loaded_model_ids(self) -> list[str]:
         """Get list of currently loaded model IDs."""
         return [mid for mid, e in self._entries.items() if e.engine is not None]
@@ -691,6 +723,7 @@ class EnginePool:
         force_lm: bool = False,
         _lease: bool = False,
         runtime_settings: object | None = None,
+        stamp_activity: bool = True,
     ) -> (
         BaseEngine
         | EmbeddingEngine
@@ -727,6 +760,16 @@ class EnginePool:
             InsufficientMemoryError: If can't free enough memory (all pinned)
             ModelLoadingError: If model is already being loaded
         """
+        # M4.4: stamp real-traffic activity and preempt any in-flight passive
+        # idle sweep BEFORE taking the lock, so the sweep releases the GPU
+        # before this request competes for it. Bench loads pass
+        # stamp_activity=False so the sweep neither resets its own idle clock
+        # nor aborts itself.
+        if stamp_activity:
+            self._last_request_monotonic = time.monotonic()
+            if self._idle_sweep_preemptor is not None:
+                await self._idle_sweep_preemptor()  # no-op unless a sweep is live
+
         async with self._lock:
             entry = self._entries.get(model_id)
             if not entry:
