@@ -434,7 +434,29 @@ async def lifespan(app: FastAPI):
                 m["id"] for m in pool.get_status()["models"] if m.get("loaded")
             }
 
-        service.set_table_sources(_suitability_models, _resident_model_ids)
+        def _fit_budget_gb() -> Optional[float]:
+            # Never-fits bound for table dispatch: ceiling minus pinned
+            # residents. Missing data -> None -> no fit filtering (fail-open).
+            pool = _server_state.engine_pool
+            if pool is None:
+                return None
+            try:
+                status = pool.get_status()
+                ceiling = status.get("final_ceiling")
+                if not ceiling:
+                    return None
+                pinned = sum(
+                    m.get("estimated_size") or 0
+                    for m in status["models"]
+                    if m.get("pinned") and m.get("loaded")
+                )
+                return round((ceiling - pinned) / 1e9, 2)
+            except Exception:  # pragma: no cover - status shape drift
+                return None
+
+        service.set_table_sources(
+            _suitability_models, _resident_model_ids, _fit_budget_gb
+        )
         _server_state.routing_service = service
         router_id = (
             resolve_model_id(routing_settings.router_model)
@@ -4776,6 +4798,7 @@ async def stream_anthropic_messages(
     messages: list,
     request: AnthropicMessagesRequest,
     resolved_model: Optional[str] = None,
+    on_complete: Optional[Callable[[int, Optional[str], float], None]] = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """
@@ -5125,6 +5148,16 @@ async def stream_anthropic_messages(
             model_id=resolved_model or request.model,
         )
 
+        if on_complete is not None:
+            try:
+                on_complete(
+                    last_output.completion_tokens,
+                    last_output.finish_reason,
+                    total_duration * 1000.0,
+                )
+            except Exception as exc:  # routing telemetry must never break a stream
+                logger.debug("Routing on_complete callback failed: %s", exc)
+
     # 7. Send message_stop
     yield create_message_stop_event()
 
@@ -5165,6 +5198,38 @@ async def create_anthropic_message(
             status_code=503,
             detail="Server is busy with oQ quantization. Please try again after quantization completes.",
         )
+
+    # Semantic routing: requests naming the virtual model id are classified
+    # and rewritten to a concrete target before engine acquisition. Concrete
+    # model ids bypass this entirely. route_chat_request() never raises
+    # (fail-open), so a routing bug cannot 5xx a user request.
+    route_decision = None
+    routing_request_id: Optional[str] = None
+    routing_service = _server_state.routing_service
+    if not isinstance(routing_service, RoutingService):
+        routing_service = None
+    if (
+        routing_service is not None
+        and request.model == routing_service.settings.virtual_model_id
+    ):
+        routing_request_id = http_request.headers.get(
+            "x-request-id"
+        ) or f"route-{uuid.uuid4().hex[:12]}"
+        route_decision = await routing_service.route_chat_request(
+            messages=request.messages,
+            has_tools=bool(request.tools),
+            request_id=routing_request_id,
+            stream=bool(request.stream),
+            endpoint="messages",
+        )
+        logger.info(
+            "Routing: %r -> %r (rule=%s, classify_ms=%.0f)",
+            request.model,
+            route_decision.target,
+            route_decision.rule_fired,
+            route_decision.classify_ms,
+        )
+        request.model = route_decision.target
 
     lease = _LLMEngineLease()
     try:
@@ -5414,6 +5479,22 @@ async def create_anthropic_message(
         await _raise_if_llm_lease_abort_requested(lease)
 
         if request.stream:
+            routing_on_complete = None
+            if route_decision is not None and routing_service is not None:
+
+                def routing_on_complete(
+                    tokens: int, reason: Optional[str], gen_ms: float
+                ) -> None:
+                    routing_service.record_outcome(
+                        routing_request_id,
+                        completion_tokens=tokens,
+                        finish_reason=reason,
+                        gen_ms=gen_ms,
+                    )
+
+            sse_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+            if route_decision is not None:
+                sse_headers["x-omlx-route"] = route_decision.header_value
             return StreamingResponse(
                 _release_after_stream(
                     _with_sse_keepalive(
@@ -5422,6 +5503,7 @@ async def create_anthropic_message(
                             messages,
                             request,
                             resolved_model=resolved_model,
+                            on_complete=routing_on_complete,
                             **chat_kwargs,
                         ),
                         http_request=http_request,
@@ -5430,7 +5512,7 @@ async def create_anthropic_message(
                     lease,
                 ),
                 media_type="text/event-stream",
-                headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+                headers=sse_headers,
             )
 
         # Non-streaming response with keepalive during prefill
@@ -5506,14 +5588,26 @@ async def create_anthropic_message(
                 request_uses_cache_control=request_has_cache_control(request),
             )
 
+            if route_decision is not None and routing_service is not None:
+                routing_service.record_outcome(
+                    routing_request_id,
+                    completion_tokens=output.completion_tokens,
+                    finish_reason=output.finish_reason,
+                    gen_ms=elapsed * 1000.0,
+                )
+
             return response.model_dump_json()
 
+        json_headers = None
+        if route_decision is not None:
+            json_headers = {"x-omlx-route": route_decision.header_value}
         return StreamingResponse(
             _release_after_stream(
                 _with_json_keepalive(http_request, _build_anthropic_message()),
                 lease,
             ),
             media_type="application/json",
+            headers=json_headers,
         )
 
     except BaseException:

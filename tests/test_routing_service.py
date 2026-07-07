@@ -273,6 +273,72 @@ async def test_record_outcome_for_unknown_request_id_is_noop(tmp_path):
     assert not (tmp_path / "routing_decisions.jsonl").exists()
 
 
+async def test_orphaned_pending_rows_flushed_with_null_outcome(tmp_path):
+    """A 507/disconnected request's row is older than the threshold and
+    flushed on the next decision, without waiting for close()."""
+    import datetime as dt
+
+    settings = make_settings(tmp_path)
+    service = RoutingService(settings)
+    engine = _FakeEngine(SMALL_ANALYSIS)
+    service.set_engine_getter(lambda model_id: _get(engine))
+
+    old_ts = (
+        dt.datetime.now(dt.timezone.utc)  # noqa: UP017 - mypy targets py310
+        - dt.timedelta(seconds=601)
+    ).isoformat()
+    service._pending["orphan-1"] = {
+        "ts": old_ts,
+        "request_id": "orphan-1",
+        "outcome": None,
+    }
+
+    await service.route_chat_request(
+        messages=[{"role": "user", "content": "hi"}],
+        has_tools=False,
+        request_id="req-fresh",
+        stream=False,
+    )
+
+    # The orphan was flushed to the queue (removed from pending); the fresh
+    # row is untouched, still pending until close/outcome.
+    assert "orphan-1" not in service._pending
+    assert "req-fresh" in service._pending
+
+    await service.close()
+    rows = read_jsonl(settings.telemetry.path)
+    ids = {r["request_id"] for r in rows}
+    assert "orphan-1" in ids
+    assert "req-fresh" in ids
+    orphan_row = next(r for r in rows if r["request_id"] == "orphan-1")
+    assert orphan_row["outcome"] is None
+
+
+async def test_fresh_pending_rows_not_flushed(tmp_path):
+    settings = make_settings(tmp_path)
+    service = RoutingService(settings)
+    engine = _FakeEngine(SMALL_ANALYSIS)
+    service.set_engine_getter(lambda model_id: _get(engine))
+
+    await service.route_chat_request(
+        messages=[{"role": "user", "content": "first"}],
+        has_tools=False,
+        request_id="req-first",
+        stream=False,
+    )
+    await service.route_chat_request(
+        messages=[{"role": "user", "content": "second"}],
+        has_tools=False,
+        request_id="req-second",
+        stream=False,
+    )
+
+    # Both are fresh (well under 600s old); neither should be flushed early.
+    assert "req-first" in service._pending
+    assert "req-second" in service._pending
+    await service.close()
+
+
 class _FakePart:
     """Stands in for a pydantic content-part model (attribute access)."""
 
