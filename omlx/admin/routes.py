@@ -6016,6 +6016,66 @@ async def set_suitability_role(
     return {"ok": True, "model": store.get_model(model_id)}
 
 
+@router.post("/api/suitability/rescore")
+async def start_suitability_rescore(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Queue a settings-delta rescore: bench one model on one benchmark with
+    one load-time setting flipped, versus its baseline (M4.3)."""
+    from .suitability import start_delta_rescore
+
+    engine_pool = _get_engine_pool()
+    if engine_pool is None:
+        raise HTTPException(status_code=503, detail="Engine pool not initialized")
+
+    body = await request.json()
+    model_id = body.get("model_id")
+    benchmark = body.get("benchmark")
+    settings_override = body.get("settings_override") or {}
+    variant_label = body.get("variant_label")
+    if not model_id or not benchmark or not settings_override or not variant_label:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "'model_id', 'benchmark', 'settings_override', and "
+                "'variant_label' are required"
+            ),
+        )
+    if engine_pool.get_entry(model_id) is None:
+        raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
+
+    try:
+        result = start_delta_rescore(
+            model_id,
+            benchmark,
+            int(body.get("sample_size", 30)),
+            settings_override,
+            variant_label,
+            engine_pool,
+            batch_size=int(body.get("batch_size", 1)),
+            ensure_baseline=bool(body.get("ensure_baseline", True)),
+        )
+    except Exception as e:  # pydantic validation from the bench request
+        raise HTTPException(status_code=400, detail=str(e))
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/api/suitability/deltas/{model_id}")
+async def get_suitability_deltas(
+    model_id: str,
+    is_admin: bool = Depends(require_admin),
+):
+    """Per (bench, variant) accuracy + speed delta vs baseline for a model."""
+    from .suitability import compute_deltas, get_store
+
+    if get_store() is None:
+        raise HTTPException(status_code=503, detail="Suitability store not initialized")
+    return {"model_id": model_id, "deltas": compute_deltas(model_id)}
+
+
 # =============================================================================
 # Benchmark API Routes (Throughput)
 # =============================================================================

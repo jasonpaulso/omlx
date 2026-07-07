@@ -71,11 +71,18 @@ def _harvest_result(result_data: dict) -> None:
     if not model_id or not bench:
         return
     baseline = bool(result_data.get("baseline", False))
+    variant = result_data.get("variant")
     q_times = [
         q.get("time_s")
         for q in result_data.get("question_results", [])
         if isinstance(q.get("time_s"), (int, float))
     ]
+    if variant:
+        source = "settings_delta"
+    elif baseline:
+        source = "suitability_sweep"
+    else:
+        source = "manual_bench"
     _store.ensure_model(model_id, size_gb=_model_size_gb(model_id))
     _store.record_eval(
         model_id,
@@ -87,8 +94,9 @@ def _harvest_result(result_data: dict) -> None:
         time_s=float(result_data.get("time_s", 0.0)),
         median_q_time_s=(round(statistics.median(q_times), 3) if q_times else None),
         load_s=result_data.get("load_s"),
-        source="suitability_sweep" if baseline else "manual_bench",
+        source=source,
         run_id=result_data.get("run_id"),
+        variant=variant,
     )
 
 
@@ -176,3 +184,140 @@ def start_sweep(
         skipped or "none",
     )
     return {"queued": eligible, "skipped": skipped, **get_queue_status()}
+
+
+def start_delta_rescore(
+    model_id: str,
+    benchmark: str,
+    sample_size: int,
+    settings_override: dict,
+    variant_label: str,
+    engine_pool: Any,
+    batch_size: int = 1,
+    ensure_baseline: bool = True,
+) -> dict:
+    """Queue a settings-delta rescore for one model on one benchmark (M4.3).
+
+    Runs the model with stock defaults plus one flipped load-time knob
+    (`settings_override`, labeled `variant_label`) and stores the result as
+    a `baseline=False` variant eval. When `ensure_baseline` and no baseline
+    eval exists yet for this bench, a baseline run is queued first so the two
+    are diffable. Reuses the accuracy queue's serialization + eviction.
+    """
+    from .accuracy_benchmark import (
+        AccuracyBenchmarkRequest,
+        add_to_queue,
+        get_queue_status,
+        start_next_from_queue,
+    )
+
+    role = "chat"
+    entry = None
+    if _store is not None:
+        _store.ensure_model(model_id, size_gb=_model_size_gb(model_id))
+        entry = _store.get_model(model_id)
+        role = entry.get("role", "chat") if entry else "chat"
+    if role != "chat":
+        return {"error": f"model role is {role!r}, not chat", "queued": []}
+
+    queued: list[str] = []
+    need_baseline = ensure_baseline and not (
+        entry is not None and _has_baseline_for_bench(entry, benchmark)
+    )
+    if need_baseline:
+        add_to_queue(
+            AccuracyBenchmarkRequest(
+                model_id=model_id,
+                benchmarks={benchmark: sample_size},
+                batch_size=batch_size,
+                baseline_mode=True,
+            )
+        )
+        queued.append(f"baseline:{benchmark}")
+
+    add_to_queue(
+        AccuracyBenchmarkRequest(
+            model_id=model_id,
+            benchmarks={benchmark: sample_size},
+            batch_size=batch_size,
+            settings_override=settings_override,
+            variant_label=variant_label,
+        )
+    )
+    queued.append(f"{variant_label}:{benchmark}")
+    start_next_from_queue(engine_pool)
+    logger.info(
+        "Settings-delta rescore queued: %s on %s (variant=%s, baseline_first=%s)",
+        model_id,
+        benchmark,
+        variant_label,
+        need_baseline,
+    )
+    return {"queued": queued, "model_id": model_id, **get_queue_status()}
+
+
+def _speed_delta(baseline: float | None, variant: float | None) -> float | None:
+    """variant - baseline (negative = the variant is faster). None if either
+    side is missing a measurement."""
+    if baseline is None or variant is None:
+        return None
+    return round(variant - baseline, 3)
+
+
+def compute_deltas(model_id: str) -> list[dict]:
+    """Diff each (bench, variant) against the latest baseline eval for that
+    bench. Latest-by-date within each group. Returns one row per variant that
+    has a comparable baseline; variants without a baseline are omitted.
+    """
+    if _store is None:
+        return []
+    entry = _store.get_model(model_id)
+    if not entry:
+        return []
+
+    baselines: dict[str, dict] = {}
+    variants: dict[tuple[str, str], dict] = {}
+    for rec in entry.get("evals", []):
+        bench = rec.get("bench")
+        if not bench:
+            continue
+        date = rec.get("date") or ""
+        if rec.get("baseline"):
+            cur = baselines.get(bench)
+            if cur is None or date > (cur.get("date") or ""):
+                baselines[bench] = rec
+        elif rec.get("variant"):
+            key = (bench, rec["variant"])
+            cur = variants.get(key)
+            if cur is None or date > (cur.get("date") or ""):
+                variants[key] = rec
+
+    rows: list[dict] = []
+    for (bench, variant), vrec in variants.items():
+        brec = baselines.get(bench)
+        if brec is None:
+            continue
+        rows.append(
+            {
+                "bench": bench,
+                "axis": vrec.get("axis"),
+                "variant": variant,
+                "baseline_accuracy": brec.get("accuracy"),
+                "variant_accuracy": vrec.get("accuracy"),
+                "accuracy_delta": round(
+                    (vrec.get("accuracy") or 0.0) - (brec.get("accuracy") or 0.0), 4
+                ),
+                "baseline_median_q_time_s": brec.get("median_q_time_s"),
+                "variant_median_q_time_s": vrec.get("median_q_time_s"),
+                "speed_delta_s": _speed_delta(
+                    brec.get("median_q_time_s"), vrec.get("median_q_time_s")
+                ),
+                "baseline_load_s": brec.get("load_s"),
+                "variant_load_s": vrec.get("load_s"),
+                "baseline_n": brec.get("n"),
+                "variant_n": vrec.get("n"),
+                "baseline_date": brec.get("date"),
+                "variant_date": vrec.get("date"),
+            }
+        )
+    return sorted(rows, key=lambda r: (r["bench"], r["variant"]))

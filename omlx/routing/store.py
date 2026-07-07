@@ -241,8 +241,15 @@ class SuitabilityStore:
         source: str = "suitability_sweep",
         run_id: str | None = None,
         date: str | None = None,
+        variant: str | None = None,
     ) -> None:
-        """Append a provenance record, re-derive categories, mark healthy."""
+        """Append a provenance record, re-derive categories, mark healthy.
+
+        `variant` (M4.3) labels a settings-delta run by the identity of the
+        changed load-time setting (e.g. "mtp_enabled", "dflash", "kv_quant").
+        Baseline runs leave it None. It never affects category derivation
+        (variant runs are baseline=False and excluded), only diffability.
+        """
         self.ensure_model(model_id)
         entry = self._data["models"][model_id]
         entry["evals"].append(
@@ -259,6 +266,7 @@ class SuitabilityStore:
                 "load_s": load_s,
                 "source": source,
                 "run_id": run_id,
+                "variant": variant,
             }
         )
         entry["categories"] = _derive_categories(entry["evals"])

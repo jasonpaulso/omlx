@@ -322,6 +322,12 @@ class ModelSettingsManager:
         # scores, so a bench run bypasses them for its target model only —
         # unrelated API traffic for other models keeps its real settings.
         self._baseline_ids: set[str] = set()
+        # Transient per-run settings overrides (M4.3 settings-delta rescoring).
+        # A variant bench run loads with stock defaults plus ONE flipped
+        # load-time knob; this holds that override for its target model only,
+        # non-persisted, cleared when the run finishes. Takes precedence over
+        # both baseline mode and persisted settings.
+        self._override_settings: Dict[str, ModelSettings] = {}
 
         # Ensure base directory exists
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -409,6 +415,12 @@ class ModelSettingsManager:
             ModelSettings for the model, or default settings if not found.
         """
         with self._lock:
+            # Transient variant override wins over everything (M4.3): a
+            # settings-delta run measures stock + one flipped knob.
+            if model_id in self._override_settings:
+                override = self._override_settings[model_id]
+                return ModelSettings.from_dict(override.to_dict())
+
             if model_id in self._baseline_ids:
                 return ModelSettings()
 
@@ -433,6 +445,25 @@ class ModelSettingsManager:
         """Clear the baseline bypass, restoring normal settings resolution."""
         with self._lock:
             self._baseline_ids = set()
+
+    def set_override_settings(self, overrides: dict[str, ModelSettings]) -> None:
+        """Replace the transient per-run settings overrides (M4.3).
+
+        Used by the accuracy benchmark runner for a settings-delta variant
+        run: get_settings returns this override (stock defaults + one flipped
+        load-time knob) for the target model, non-persisted, overriding both
+        baseline mode and stored settings. Cleared when the run finishes.
+        """
+        with self._lock:
+            self._override_settings = {
+                mid: ModelSettings.from_dict(s.to_dict())
+                for mid, s in overrides.items()
+            }
+
+    def clear_override_settings(self) -> None:
+        """Clear transient variant overrides, restoring normal resolution."""
+        with self._lock:
+            self._override_settings = {}
 
     def get_settings_for_request(
         self,

@@ -224,3 +224,151 @@ class TestSweepOnlyMissing:
             ["small-model"], {"mmlu_pro": 30}, pool, only_missing=True
         )
         assert status["skipped"] == {"small-model": "draft_companion"}
+
+
+class TestSettingsDeltaRescore:
+    def _mock_queue(self, monkeypatch):
+        queued = []
+        monkeypatch.setattr(ab, "add_to_queue", queued.append)
+        monkeypatch.setattr(ab, "start_next_from_queue", lambda p: "run-x")
+        monkeypatch.setattr(ab, "get_queue_status", lambda: {"queue": []})
+        return queued
+
+    def test_queues_baseline_then_variant_when_no_baseline(
+        self, store_env, monkeypatch
+    ):
+        store, pool = store_env
+        queued = self._mock_queue(monkeypatch)
+        result = suitability.start_delta_rescore(
+            "big-model", "mmlu_pro", 30, {"mtp_enabled": True}, "mtp", pool
+        )
+        # baseline run first (baseline_mode, no override), then variant run
+        assert len(queued) == 2
+        assert queued[0].baseline_mode and queued[0].settings_override is None
+        assert queued[1].settings_override == {"mtp_enabled": True}
+        assert queued[1].variant_label == "mtp"
+        assert not queued[1].baseline_mode
+        assert result["queued"] == ["baseline:mmlu_pro", "mtp:mmlu_pro"]
+
+    def test_skips_baseline_when_present(self, store_env, monkeypatch):
+        store, pool = store_env
+        suitability._harvest_result(
+            _result(model_id="big-model", bench="mmlu_pro", baseline=True)
+        )
+        queued = self._mock_queue(monkeypatch)
+        suitability.start_delta_rescore(
+            "big-model", "mmlu_pro", 30, {"mtp_enabled": True}, "mtp", pool
+        )
+        assert len(queued) == 1
+        assert queued[0].variant_label == "mtp"
+
+    def test_ensure_baseline_false_queues_only_variant(self, store_env, monkeypatch):
+        store, pool = store_env
+        queued = self._mock_queue(monkeypatch)
+        suitability.start_delta_rescore(
+            "big-model",
+            "mmlu_pro",
+            30,
+            {"mtp_enabled": True},
+            "mtp",
+            pool,
+            ensure_baseline=False,
+        )
+        assert len(queued) == 1
+
+    def test_non_chat_rejected(self, store_env, monkeypatch):
+        store, pool = store_env
+        self._mock_queue(monkeypatch)
+        result = suitability.start_delta_rescore(
+            "small-model", "mmlu_pro", 30, {"mtp_enabled": True}, "mtp", pool
+        )
+        assert "error" in result and result["queued"] == []
+
+    def test_variant_result_tagged_and_excluded_from_scores(
+        self, store_env, monkeypatch
+    ):
+        store, pool = store_env
+        suitability._harvest_result(
+            _result(bench="mmlu_pro", baseline=True, accuracy=0.75)
+        )
+        suitability._harvest_result(
+            _result(bench="mmlu_pro", baseline=False, variant="mtp", accuracy=0.74)
+        )
+        entry = store.get_model("big-model")
+        evals = entry["evals"]
+        variant_recs = [e for e in evals if e.get("variant") == "mtp"]
+        assert len(variant_recs) == 1
+        assert variant_recs[0]["source"] == "settings_delta"
+        assert variant_recs[0]["baseline"] is False
+        # Category score still reflects the baseline (0.75), not the variant.
+        assert entry["categories"]["knowledge"] == 0.75
+
+
+class TestComputeDeltas:
+    def test_delta_computed(self, store_env):
+        store, pool = store_env
+        suitability._harvest_result(
+            _result(bench="mmlu_pro", baseline=True, accuracy=0.70)
+        )
+        suitability._harvest_result(
+            _result(
+                bench="mmlu_pro",
+                baseline=False,
+                variant="mtp",
+                accuracy=0.68,
+                question_results=[{"id": 1, "time_s": 1.0}, {"id": 2, "time_s": 1.0}],
+            )
+        )
+        deltas = suitability.compute_deltas("big-model")
+        assert len(deltas) == 1
+        d = deltas[0]
+        assert d["bench"] == "mmlu_pro" and d["variant"] == "mtp"
+        assert d["accuracy_delta"] == round(0.68 - 0.70, 4)
+        # baseline median 3.0 (2,3,4), variant median 1.0 -> faster by 2.0
+        assert d["speed_delta_s"] == -2.0
+
+    def test_variant_without_baseline_omitted(self, store_env):
+        store, pool = store_env
+        suitability._harvest_result(
+            _result(bench="mmlu_pro", baseline=False, variant="mtp")
+        )
+        assert suitability.compute_deltas("big-model") == []
+
+    def test_latest_baseline_wins(self, store_env):
+        # Set dates explicitly via record_eval (the harvest sink stamps its
+        # own timestamp, so date ordering must be exercised at the store).
+        store, pool = store_env
+        store.ensure_model("big-model")
+        store.record_eval(
+            "big-model",
+            bench="mmlu_pro",
+            accuracy=0.5,
+            n=40,
+            baseline=True,
+            thinking=False,
+            time_s=1.0,
+            date="2026-01-01T00:00:00+00:00",
+        )
+        store.record_eval(
+            "big-model",
+            bench="mmlu_pro",
+            accuracy=0.9,
+            n=40,
+            baseline=True,
+            thinking=False,
+            time_s=1.0,
+            date="2026-02-01T00:00:00+00:00",
+        )
+        store.record_eval(
+            "big-model",
+            bench="mmlu_pro",
+            accuracy=0.8,
+            n=40,
+            baseline=False,
+            thinking=False,
+            time_s=1.0,
+            variant="mtp",
+            date="2026-02-02T00:00:00+00:00",
+        )
+        d = suitability.compute_deltas("big-model")[0]
+        assert d["baseline_accuracy"] == 0.9  # latest baseline, not 0.5

@@ -12,10 +12,10 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,22 @@ _current_model: Optional[str] = None
 _engine_pool_ref: Any = None
 
 VALID_BENCHMARKS = [
-    "mmlu", "mmlu_pro", "kmmlu", "cmmlu", "jmmlu",
-    "hellaswag", "truthfulqa", "arc_challenge", "winogrande",
-    "gsm8k", "mathqa", "humaneval", "mbpp", "livecodebench",
-    "bbq", "safetybench",
+    "mmlu",
+    "mmlu_pro",
+    "kmmlu",
+    "cmmlu",
+    "jmmlu",
+    "hellaswag",
+    "truthfulqa",
+    "arc_challenge",
+    "winogrande",
+    "gsm8k",
+    "mathqa",
+    "humaneval",
+    "mbpp",
+    "livecodebench",
+    "bbq",
+    "safetybench",
 ]
 
 
@@ -72,6 +84,11 @@ class AccuracyBenchmarkRequest(BaseModel):
     # and evaluate with stock defaults. Custom settings were shown to
     # corrupt suitability eval scores.
     baseline_mode: bool = False
+    # M4.3 settings-delta rescoring: run with stock defaults plus this one
+    # override applied transiently (e.g. {"mtp_enabled": True}). Mutually
+    # exclusive with baseline_mode. variant_label names the delta.
+    settings_override: dict[str, Any] | None = None
+    variant_label: str | None = None
 
     @field_validator("batch_size")
     @classmethod
@@ -93,6 +110,40 @@ class AccuracyBenchmarkRequest(BaseModel):
             if size < 0:
                 raise ValueError(f"Sample size for '{name}' must be >= 0")
         return v
+
+    @field_validator("settings_override")
+    @classmethod
+    def validate_settings_override(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if v is None:
+            return v
+        from ..model_settings import ModelSettings
+
+        valid = {f.name for f in fields(ModelSettings)}
+        unknown = set(v) - valid
+        if unknown:
+            raise ValueError(f"Unknown settings_override keys: {sorted(unknown)}")
+        if not v:
+            raise ValueError("settings_override must not be empty")
+        # Build once to surface conflicting-knob errors (mtp+dflash, etc.)
+        # from ModelSettings.__post_init__ at request time, not mid-run.
+        try:
+            ModelSettings.from_dict(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid settings_override: {e}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_variant(self) -> "AccuracyBenchmarkRequest":
+        if self.settings_override is not None:
+            if self.baseline_mode:
+                raise ValueError(
+                    "settings_override and baseline_mode are mutually exclusive"
+                )
+            if not self.variant_label:
+                raise ValueError("variant_label is required with settings_override")
+        return self
 
 
 @dataclass
@@ -326,9 +377,7 @@ async def _send_event(run: AccuracyBenchmarkRun, event: dict) -> None:
 # --- Benchmark execution ---
 
 
-async def run_accuracy_benchmark(
-    run: AccuracyBenchmarkRun, engine_pool: Any
-) -> None:
+async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) -> None:
     """Execute accuracy benchmark run.
 
     Phases:
@@ -351,15 +400,18 @@ async def run_accuracy_benchmark(
         run.phase = "loading"
         loaded_ids = engine_pool.get_loaded_model_ids()
         if loaded_ids:
-            await _send_event(run, {
-                "type": "progress",
-                "phase": "unload",
-                "model_id": request.model_id,
-                "benchmark": "",
-                "message": f"Unloading {len(loaded_ids)} model(s)...",
-                "current": 0,
-                "total": len(request.benchmarks),
-            })
+            await _send_event(
+                run,
+                {
+                    "type": "progress",
+                    "phase": "unload",
+                    "model_id": request.model_id,
+                    "benchmark": "",
+                    "message": f"Unloading {len(loaded_ids)} model(s)...",
+                    "current": 0,
+                    "total": len(request.benchmarks),
+                },
+            )
             for model_id in loaded_ids:
                 try:
                     await engine_pool._unload_engine(model_id)
@@ -367,15 +419,18 @@ async def run_accuracy_benchmark(
                     logger.warning(f"Failed to unload {model_id}: {e}")
 
         # Phase 2: Load target model
-        await _send_event(run, {
-            "type": "progress",
-            "phase": "load",
-            "model_id": request.model_id,
-            "benchmark": "",
-            "message": f"Loading {request.model_id}...",
-            "current": 0,
-            "total": len(request.benchmarks),
-        })
+        await _send_event(
+            run,
+            {
+                "type": "progress",
+                "phase": "load",
+                "model_id": request.model_id,
+                "benchmark": "",
+                "message": f"Loading {request.model_id}...",
+                "current": 0,
+                "total": len(request.benchmarks),
+            },
+        )
 
         # Baseline mode: force the target model to load and sample with
         # completely stock settings (no custom sampling, no draft/MTP/KV
@@ -384,6 +439,16 @@ async def run_accuracy_benchmark(
         # block below regardless of how the run ends.
         if request.baseline_mode and engine_pool._settings_manager is not None:
             engine_pool._settings_manager.set_baseline_ids({request.model_id})
+
+        # Variant mode (M4.3): load with stock defaults plus one flipped
+        # load-time knob. Same transient, non-persisted mechanism as baseline
+        # (from_dict yields stock + the override); cleared in finally.
+        if request.settings_override and engine_pool._settings_manager is not None:
+            from ..model_settings import ModelSettings
+
+            engine_pool._settings_manager.set_override_settings(
+                {request.model_id: ModelSettings.from_dict(request.settings_override)}
+            )
 
         # Force LM engine for accuracy benchmarks — text-only tasks
         # don't need VLM and the VLM adapter can produce empty responses.
@@ -424,24 +489,30 @@ async def run_accuracy_benchmark(
             evaluator = bench_cls()
 
             # Load dataset
-            await _send_event(run, {
-                "type": "progress",
-                "phase": "download",
-                "model_id": request.model_id,
-                "benchmark": bench_name,
-                "message": f"Loading {bench_name} dataset...",
-                "current": completed,
-                "total": len(request.benchmarks),
-            })
+            await _send_event(
+                run,
+                {
+                    "type": "progress",
+                    "phase": "download",
+                    "model_id": request.model_id,
+                    "benchmark": bench_name,
+                    "message": f"Loading {bench_name} dataset...",
+                    "current": completed,
+                    "total": len(request.benchmarks),
+                },
+            )
 
             try:
                 items = await evaluator.load_dataset(sample_size=sample_size)
             except Exception as e:
                 logger.error(f"Failed to load {bench_name} dataset: {e}")
-                await _send_event(run, {
-                    "type": "error",
-                    "message": f"Failed to load {bench_name} dataset: {e}",
-                })
+                await _send_event(
+                    run,
+                    {
+                        "type": "error",
+                        "message": f"Failed to load {bench_name} dataset: {e}",
+                    },
+                )
                 run.status = "error"
                 run.error_message = str(e)
                 return
@@ -452,50 +523,64 @@ async def run_accuracy_benchmark(
             async def on_progress(current: int, total: int) -> None:
                 if run.status == "cancelled":
                     raise asyncio.CancelledError()
-                await _send_event(run, {
+                await _send_event(
+                    run,
+                    {
+                        "type": "progress",
+                        "phase": "eval",
+                        "model_id": request.model_id,
+                        "benchmark": bench_name,
+                        "message": f"Evaluating {bench_name} ({current}/{total})...",
+                        "current": completed,
+                        "total": len(request.benchmarks),
+                        "bench_current": current,
+                        "bench_total": total,
+                    },
+                )
+
+            await _send_event(
+                run,
+                {
                     "type": "progress",
                     "phase": "eval",
                     "model_id": request.model_id,
                     "benchmark": bench_name,
-                    "message": f"Evaluating {bench_name} ({current}/{total})...",
+                    "message": f"Evaluating {bench_name} (0/{total_items})...",
                     "current": completed,
                     "total": len(request.benchmarks),
-                    "bench_current": current,
-                    "bench_total": total,
-                })
-
-            await _send_event(run, {
-                "type": "progress",
-                "phase": "eval",
-                "model_id": request.model_id,
-                "benchmark": bench_name,
-                "message": f"Evaluating {bench_name} (0/{total_items})...",
-                "current": completed,
-                "total": len(request.benchmarks),
-                "bench_current": 0,
-                "bench_total": total_items,
-            })
+                    "bench_current": 0,
+                    "bench_total": total_items,
+                },
+            )
 
             try:
                 result = await evaluator.run(
-                    engine, items, on_progress,
+                    engine,
+                    items,
+                    on_progress,
                     batch_size=request.batch_size,
                     sampling_kwargs=sampling_kwargs,
                     enable_thinking=request.enable_thinking,
                 )
             except asyncio.CancelledError:
                 run.status = "cancelled"
-                await _send_event(run, {
-                    "type": "error",
-                    "message": "Benchmark cancelled",
-                })
+                await _send_event(
+                    run,
+                    {
+                        "type": "error",
+                        "message": "Benchmark cancelled",
+                    },
+                )
                 return
             except Exception as e:
                 logger.error(f"Error running {bench_name}: {e}")
-                await _send_event(run, {
-                    "type": "error",
-                    "message": f"Error running {bench_name}: {e}",
-                })
+                await _send_event(
+                    run,
+                    {
+                        "type": "error",
+                        "message": f"Error running {bench_name}: {e}",
+                    },
+                )
                 run.status = "error"
                 run.error_message = str(e)
                 return
@@ -511,6 +596,7 @@ async def run_accuracy_benchmark(
                 "time_s": round(result.time_seconds, 1),
                 "load_s": round(load_s, 2),
                 "baseline": request.baseline_mode,
+                "variant": request.variant_label,
                 "run_id": run.bench_id,
                 "question_results": [
                     {
@@ -543,10 +629,13 @@ async def run_accuracy_benchmark(
             run.results.append(result_data)
             completed += 1
 
-            await _send_event(run, {
-                "type": "result",
-                "data": result_data,
-            })
+            await _send_event(
+                run,
+                {
+                    "type": "result",
+                    "data": result_data,
+                },
+            )
 
         # Phase 4: Unload model. The result(s) are already emitted by now,
         # so flip phase so polling clients hide the running indicator
@@ -563,31 +652,40 @@ async def run_accuracy_benchmark(
         run.status = "completed"
         run.phase = "completed"
 
-        await _send_event(run, {
-            "type": "done",
-            "summary": {
-                "model_id": request.model_id,
-                "total_time": round(total_time, 1),
-                "benchmarks_completed": completed,
+        await _send_event(
+            run,
+            {
+                "type": "done",
+                "summary": {
+                    "model_id": request.model_id,
+                    "total_time": round(total_time, 1),
+                    "benchmarks_completed": completed,
+                },
             },
-        })
+        )
 
     except asyncio.CancelledError:
         run.status = "cancelled"
         run.phase = "cancelled"
-        await _send_event(run, {
-            "type": "error",
-            "message": "Benchmark cancelled",
-        })
+        await _send_event(
+            run,
+            {
+                "type": "error",
+                "message": "Benchmark cancelled",
+            },
+        )
     except Exception as e:
         logger.exception(f"Accuracy benchmark error: {e}")
         run.status = "error"
         run.phase = "error"
         run.error_message = str(e)
-        await _send_event(run, {
-            "type": "error",
-            "message": str(e),
-        })
+        await _send_event(
+            run,
+            {
+                "type": "error",
+                "message": str(e),
+            },
+        )
     finally:
         if _run_status_sink is not None:
             try:
@@ -599,5 +697,8 @@ async def run_accuracy_benchmark(
 
         # Re-enable TTL auto-unload
         engine_pool._suppress_ttl = False
-        if request.baseline_mode and engine_pool._settings_manager is not None:
-            engine_pool._settings_manager.clear_baseline_ids()
+        if engine_pool._settings_manager is not None:
+            if request.baseline_mode:
+                engine_pool._settings_manager.clear_baseline_ids()
+            if request.settings_override:
+                engine_pool._settings_manager.clear_override_settings()
