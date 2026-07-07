@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 EngineGetter = Callable[[str], Awaitable[Any]]
 ModelsGetter = Callable[[], dict[str, dict]]
 ResidentGetter = Callable[[], set[str]]
+FitBudgetGetter = Callable[[], float | None]
+
+# Orphan flush (P1-D): a 507/disconnected request never calls
+# record_outcome, so its pending row would otherwise sit in memory until
+# shutdown. Flush anything this stale on every new decision.
+_ORPHAN_MAX_AGE_S = 600
 
 
 @dataclass
@@ -43,6 +49,7 @@ class RouteDecision:
     raw_analysis: str | None
     classify_ms: float
     candidates: list[tuple[str, float]] | None = None  # table dispatch only
+    unfit: list[str] | None = None  # table dispatch only: excluded, can't fit
 
     @property
     def header_value(self) -> str:
@@ -111,6 +118,7 @@ class RoutingService:
         self._engine_getter: EngineGetter | None = None
         self._models_getter: ModelsGetter | None = None
         self._resident_getter: ResidentGetter | None = None
+        self._fit_budget_getter: FitBudgetGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
@@ -123,15 +131,24 @@ class RoutingService:
         self._engine_getter = fn
 
     def set_table_sources(
-        self, models_getter: ModelsGetter, resident_getter: ResidentGetter
+        self,
+        models_getter: ModelsGetter,
+        resident_getter: ResidentGetter,
+        fit_budget_getter: FitBudgetGetter | None = None,
     ) -> None:
         """Wire suitability-store and pool-residency snapshots (M3 N-way).
 
         Cheap sync callables evaluated per routed request. Table dispatch
         stays inert unless settings.table_dispatch.enabled is also true.
+
+        `fit_budget_getter` (P0-C, optional) returns the never-fits ceiling
+        in GB -- the ceiling minus pinned/resident memory, computed by the
+        caller from EnginePool.get_status(). None (absent or returning
+        None) disables fit filtering; dispatch behaves exactly as before.
         """
         self._models_getter = models_getter
         self._resident_getter = resident_getter
+        self._fit_budget_getter = fit_budget_getter
 
     async def route_chat_request(
         self,
@@ -214,6 +231,7 @@ class RoutingService:
                 raw_analysis=raw_analysis,
                 classify_ms=(time.perf_counter() - start) * 1000,
                 candidates=table_choice.candidates or None,
+                unfit=table_choice.unfit or None,
             )
             self._record_decision(decision, request_id, endpoint, stream)
             return decision
@@ -258,6 +276,9 @@ class RoutingService:
                         generalist, f"override:{override}", []
                     )
                 return None
+            fit_budget_gb = (
+                self._fit_budget_getter() if self._fit_budget_getter else None
+            )
             return dispatch_table.choose(
                 features,
                 models,
@@ -266,6 +287,7 @@ class RoutingService:
                 residency_epsilon=cfg.residency_epsilon,
                 max_interactive_median_q_time_s=cfg.max_interactive_median_q_time_s,
                 default_target=generalist,
+                fit_budget_gb=fit_budget_gb,
             )
         except Exception as e:  # noqa: BLE001 - dispatch must never 5xx
             logger.warning("table dispatch failed, falling back to binary: %s", e)
@@ -327,6 +349,7 @@ class RoutingService:
         if not self.settings.telemetry.enabled:
             return
         self._ensure_writer()
+        self._flush_orphans()
         self._pending[request_id] = {
             "ts": _now_iso(),
             "request_id": request_id,
@@ -343,8 +366,28 @@ class RoutingService:
                 if decision.candidates
                 else None
             ),
+            "unfit": decision.unfit if decision.unfit else None,
             "outcome": None,
         }
+
+    def _flush_orphans(self) -> None:
+        """Move pending rows older than _ORPHAN_MAX_AGE_S to the write queue.
+
+        A 507'd or disconnected request never calls record_outcome, so its
+        row would otherwise sit in `_pending` until shutdown. Cheap: only
+        scans the (small) in-memory pending dict, no timers.
+        """
+        now = datetime.now(timezone.utc)  # noqa: UP017 - mypy targets py310
+        stale_ids = []
+        for request_id, row in self._pending.items():
+            try:
+                row_age_s = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if row_age_s > _ORPHAN_MAX_AGE_S:
+                stale_ids.append(request_id)
+        for request_id in stale_ids:
+            self._enqueue(self._pending.pop(request_id))
 
     def _ensure_writer(self) -> None:
         if self._writer_task is not None:

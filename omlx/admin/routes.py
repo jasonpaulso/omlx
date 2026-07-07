@@ -5850,7 +5850,11 @@ async def start_suitability_sweep(
 
     try:
         return start_sweep(
-            models, benchmarks, engine_pool, batch_size=body.get("batch_size", 1)
+            models,
+            benchmarks,
+            engine_pool,
+            batch_size=body.get("batch_size", 1),
+            only_missing=body.get("only_missing", False),
         )
     except Exception as e:  # pydantic validation from the bench request
         raise HTTPException(status_code=400, detail=str(e))

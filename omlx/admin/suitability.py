@@ -103,16 +103,29 @@ def _on_run_status(model_id: str, status: str, error_message: str | None) -> Non
     )
 
 
+def _has_baseline_for_bench(entry: dict, bench: str) -> bool:
+    return any(
+        rec.get("bench") == bench and rec.get("baseline")
+        for rec in entry.get("evals", [])
+    )
+
+
 def start_sweep(
     models: list[str],
     benchmarks: dict[str, int],
     engine_pool: Any,
     batch_size: int = 1,
+    only_missing: bool = False,
 ) -> dict:
     """Enqueue baseline-mode benchmark runs for each model; returns queue status.
 
     The existing queue serializes runs and evicts all models before each,
     so sweep politeness is inherited, not reimplemented.
+
+    `only_missing` (P1-E gap-fill): additionally skip models that already
+    have a baseline eval record for every bench in `benchmarks` -- a
+    partially-covered model is still queued. Makes resuming a crashed
+    sweep a single call instead of a hand-picked model list.
     """
     from .accuracy_benchmark import (
         AccuracyBenchmarkRequest,
@@ -125,6 +138,7 @@ def start_sweep(
     eligible: list[str] = []
     for model_id in models:
         role = "chat"
+        entry = None
         if _store is not None:
             _store.ensure_model(model_id, size_gb=_model_size_gb(model_id))
             entry = _store.get_model(model_id)
@@ -132,10 +146,17 @@ def start_sweep(
         # Companions/embedders/etc. are never benched standalone (a draft
         # model scored standalone is a category error, not a data point).
         # User role overrides via /api/suitability/role change eligibility.
-        if role == "chat":
-            eligible.append(model_id)
-        else:
+        if role != "chat":
             skipped[model_id] = role
+            continue
+        if (
+            only_missing
+            and entry is not None
+            and all(_has_baseline_for_bench(entry, bench) for bench in benchmarks)
+        ):
+            skipped[model_id] = "already_scored"
+            continue
+        eligible.append(model_id)
 
     for model_id in eligible:
         add_to_queue(
