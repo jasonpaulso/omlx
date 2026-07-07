@@ -101,6 +101,11 @@ def main() -> int:
     ap.add_argument("--virtual-id", default="auto")
     ap.add_argument("--telemetry", default="~/.omlx/routing_decisions.jsonl")
     ap.add_argument("--timeout", type=float, default=180.0)
+    ap.add_argument(
+        "--big-id",
+        default="gpt-oss-120b-Fable-5-Distilled",
+        help="configured routing.targets.big (for the advisory agreement stat)",
+    )
     args = ap.parse_args()
 
     failures: list[str] = []
@@ -162,11 +167,7 @@ def main() -> int:
             print(f"  {tgt}: {n}/{len(routes)}")
         if len(targets) < 2:
             print("  WARNING: only one target exercised — check policy thresholds")
-        agree = sum(
-            1
-            for _, t, big in routes
-            if (t == targets[-1]) == big or len(targets) == 1
-        )
+        agree = sum(1 for _, t, big in routes if (t == args.big_id) == big)
         print(f"  label agreement (advisory): {agree}/{len(routes)}")
 
     # 5. Telemetry rows
