@@ -235,7 +235,18 @@ Remaining M4 (rough priority):
 1. **Settings-delta rescoring** — re-run a slice with one setting changed (draft model, thinking, KV quant) and report the accuracy/speed delta per model. Turns the careless-config problem into a measured tuning assistant, and validates spec-decode losslessness per model.
 2. **Passive idle-time sweeps** — the hardest 20% (idle detection + interruption semantics).
 3. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
-4. **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model). Note: the routing admin UI and `enable_routing` gate are fork-only polish, not part of a minimal upstream patch.
+
+## M5 — dashboard polish
+
+UI polish and improvements in the areas the routing feature has touched:
+the Roster Suitability page, the Global Settings routing panel, the per-model
+`enable_routing` control, and any decision-log / route-header surfacing. Catch
+rough edges, empty/loading states, copy, and affordances introduced by M1–M4.
+Scope grows as the routing surfaces get real operator use.
+
+## Shelved
+
+- **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model). The routing admin UI and `enable_routing` gate are fork-only polish, not part of a minimal upstream patch. **Held pending rigorous validation** — a comprehensive report/audit of routing correctness and quality before anything is offered upstream. Check-in scheduled 2026-07-14.
 
 ## Provenance
 
