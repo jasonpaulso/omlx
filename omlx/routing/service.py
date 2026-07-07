@@ -83,6 +83,25 @@ def _last_user_content(messages: list) -> str:
     return ""
 
 
+def _has_non_text_parts(messages: list) -> bool:
+    """True if any message carries a non-text content part (image_url etc.).
+
+    Scans the whole conversation, not just the last turn: an image three
+    turns back still requires a vision-capable target. File parts are
+    normally flattened to text by MarkItDown preprocessing before routing
+    sees the request, so in practice this triggers on image/audio/video
+    part types.
+    """
+    for msg in messages:
+        content = _msg_field(msg, "content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if _msg_field(part, "type") not in (None, "text"):
+                return True
+    return False
+
+
 class RoutingService:
     """Classifies "auto" requests and rewrites them to a concrete target."""
 
@@ -126,6 +145,28 @@ class RoutingService:
         """Classify and route one request. Never raises."""
         start = time.perf_counter()
         cfg = self.settings.policy
+
+        # Shape rule precedes everything (decision #11: semantic routing
+        # layers BEHIND shape-based rules). A request carrying image/audio
+        # parts must reach a vision-capable target — text-only targets
+        # cannot see the content regardless of tools or complexity.
+        if _has_non_text_parts(messages):
+            vision_target = self.settings.targets.get("vision")
+            if vision_target:
+                decision = RouteDecision(
+                    target=vision_target,
+                    rule_fired="shape:vision",
+                    override=None,
+                    features=None,
+                    raw_analysis=None,
+                    classify_ms=(time.perf_counter() - start) * 1000,
+                )
+                self._record_decision(decision, request_id, endpoint, stream)
+                return decision
+            logger.warning(
+                "Routing: request has non-text parts but no targets.vision "
+                "configured; text-only dispatch will not see them"
+            )
 
         override: str | None = None
         if has_tools and cfg.agentic_override.on_tools:
