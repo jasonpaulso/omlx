@@ -5821,6 +5821,84 @@ async def stream_accuracy_benchmark(
 
 
 # =============================================================================
+# Roster Suitability API Routes
+# =============================================================================
+
+
+@router.post("/api/suitability/sweep")
+async def start_suitability_sweep(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Queue baseline-mode benchmark runs for the selected models."""
+    from .suitability import start_sweep
+
+    engine_pool = _get_engine_pool()
+    if engine_pool is None:
+        raise HTTPException(status_code=503, detail="Engine pool not initialized")
+
+    body = await request.json()
+    models = body.get("models") or []
+    benchmarks = body.get("benchmarks") or {}
+    if not models or not benchmarks:
+        raise HTTPException(
+            status_code=400, detail="'models' and 'benchmarks' are required"
+        )
+    unknown = [m for m in models if engine_pool.get_entry(m) is None]
+    if unknown:
+        raise HTTPException(status_code=404, detail=f"Models not found: {unknown}")
+
+    try:
+        return start_sweep(
+            models, benchmarks, engine_pool, batch_size=body.get("batch_size", 1)
+        )
+    except Exception as e:  # pydantic validation from the bench request
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/api/suitability/table")
+async def get_suitability_table(is_admin: bool = Depends(require_admin)):
+    """Return the persistent suitability table plus per-axis rankings."""
+    from ..routing.store import CATEGORY_AXES
+    from .suitability import get_store
+
+    store = get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Suitability store not initialized")
+
+    axes = sorted(set(CATEGORY_AXES.values()))
+    return {
+        "models": store.all_models(),
+        "rankings": {axis: store.ranked(axis) for axis in axes},
+    }
+
+
+@router.post("/api/suitability/role")
+async def set_suitability_role(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Override a model's role (user override wins over heuristics)."""
+    from .suitability import get_store
+
+    store = get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Suitability store not initialized")
+
+    body = await request.json()
+    model_id = body.get("model_id")
+    role = body.get("role")
+    valid_roles = ("chat", "draft_companion", "embedding", "reranker", "router")
+    if not model_id or role not in valid_roles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'model_id' and 'role' (one of {valid_roles}) are required",
+        )
+    store.set_role(model_id, role, source="user")
+    return {"ok": True, "model": store.get_model(model_id)}
+
+
+# =============================================================================
 # Benchmark API Routes (Throughput)
 # =============================================================================
 

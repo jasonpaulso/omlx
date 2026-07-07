@@ -439,6 +439,16 @@ async def lifespan(app: FastAPI):
                 routing_settings.policy.fail_open_target,
             )
 
+    # Startup: Suitability store + bench-result harvesting (always on;
+    # writes only when benchmark runs complete, so idle cost is zero).
+    if _server_state.engine_pool is not None:
+        try:
+            from .admin.suitability import init_suitability
+
+            init_suitability(_server_state.engine_pool)
+        except Exception as exc:  # pragma: no cover - never block startup
+            logger.warning("Suitability store init failed: %s", exc)
+
     # Startup: Preload pinned models
     if _server_state.engine_pool is not None:
         await _server_state.engine_pool.preload_pinned_models()
@@ -513,6 +523,12 @@ async def lifespan(app: FastAPI):
         await _server_state.routing_service.close()
         _server_state.routing_service = None
         logger.info("Routing service stopped")
+    try:
+        from .admin.suitability import shutdown_suitability
+
+        shutdown_suitability()
+    except Exception:  # pragma: no cover - shutdown must not cascade
+        pass
     if ttl_task is not None:
         ttl_task.cancel()
         try:

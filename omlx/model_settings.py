@@ -308,6 +308,11 @@ class ModelSettingsManager:
         self._settings: Dict[str, ModelSettings] = {}
         self._profiles: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._templates: Dict[str, Dict[str, Any]] = {}
+        # Model IDs currently forced to stock defaults (accuracy benchmark
+        # baseline mode). Custom sampling/load-time settings corrupt eval
+        # scores, so a bench run bypasses them for its target model only —
+        # unrelated API traffic for other models keeps its real settings.
+        self._baseline_ids: set[str] = set()
 
         # Ensure base directory exists
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -395,12 +400,30 @@ class ModelSettingsManager:
             ModelSettings for the model, or default settings if not found.
         """
         with self._lock:
+            if model_id in self._baseline_ids:
+                return ModelSettings()
+
             if model_id in self._settings:
                 # Return a copy to prevent external modification
                 settings = self._settings[model_id]
                 return ModelSettings.from_dict(settings.to_dict())
 
             return ModelSettings()
+
+    def set_baseline_ids(self, ids: set[str]) -> None:
+        """Replace the set of model IDs forced to stock default settings.
+
+        Used by the accuracy benchmark runner so a bench run's target model
+        loads and samples with completely stock settings, regardless of
+        any custom settings stored for it.
+        """
+        with self._lock:
+            self._baseline_ids = set(ids)
+
+    def clear_baseline_ids(self) -> None:
+        """Clear the baseline bypass, restoring normal settings resolution."""
+        with self._lock:
+            self._baseline_ids = set()
 
     def get_settings_for_request(
         self,
