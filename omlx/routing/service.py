@@ -22,7 +22,7 @@ from typing import Any
 
 from omlx.routing import table as dispatch_table
 from omlx.routing.policy import decide
-from omlx.routing.profiler import RouterFeatures, RouterProfiler
+from omlx.routing.profiler import RouterFeatures, make_profiler
 from omlx.settings import RoutingSettings
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class RoutingService:
 
     def __init__(self, settings: RoutingSettings) -> None:
         self.settings = settings
-        self._profiler = RouterProfiler(settings.router_model)
+        self._profiler = make_profiler(settings)
         self._engine_getter: EngineGetter | None = None
         self._models_getter: ModelsGetter | None = None
         self._resident_getter: ResidentGetter | None = None
@@ -208,12 +208,17 @@ class RoutingService:
 
         if override is None:
             try:
-                if self._engine_getter is None:
-                    raise RuntimeError("no engine getter configured")
 
                 async def _classify() -> tuple[RouterFeatures, str]:
                     text = _last_user_content(messages)
-                    engine = await self._engine_getter(self.settings.router_model)  # type: ignore[misc]
+                    engine = None
+                    # The capability profiler owns its own model and ignores
+                    # the engine; only the generative profiler needs one from
+                    # the pool.
+                    if getattr(self._profiler, "needs_engine", True):
+                        if self._engine_getter is None:
+                            raise RuntimeError("no engine getter configured")
+                        engine = await self._engine_getter(self.settings.router_model)
                     return await self._profiler.classify(engine, text)
 
                 features, raw_analysis = await asyncio.wait_for(

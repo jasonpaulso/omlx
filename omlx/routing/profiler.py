@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 CLASSIFY_MAX_TOKENS = 96
 PROMPT_TEMPLATE = "Task: {text}\nAnalysis: "
@@ -82,6 +82,8 @@ class RouterProfiler:
     owns engine acquisition and passes the resolved engine in.
     """
 
+    needs_engine = True
+
     def __init__(self, model_id: str) -> None:
         self.model_id = model_id
 
@@ -100,3 +102,30 @@ class RouterProfiler:
         )
         raw_analysis = output.text.strip()
         return parse_router_output(raw_analysis), raw_analysis
+
+
+class Profiler(Protocol):
+    """Structural contract shared by the generative and capability profilers."""
+
+    needs_engine: bool
+
+    async def classify(self, engine: Any, text: str) -> tuple[RouterFeatures, str]: ...
+
+
+def make_profiler(settings: Any) -> Profiler:
+    """Build the profiler for the configured family.
+
+    ``profiler_kind`` selects the implementation: "generative" (default,
+    Supra-style completion) or "capability" (single-forward-pass ModernBERT
+    classifier). Both expose the same ``classify(engine, text)`` contract and
+    a ``needs_engine`` flag. Unknown kinds fall back to generative.
+    """
+    kind = getattr(settings, "profiler_kind", "generative")
+    if kind == "capability":
+        from omlx.routing.profiler_capability import CapabilityProfiler
+
+        return CapabilityProfiler(
+            settings.router_model,
+            threshold=getattr(settings, "capability_threshold", 0.5),
+        )
+    return RouterProfiler(settings.router_model)

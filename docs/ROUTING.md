@@ -105,6 +105,8 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "enabled": false,
   "virtual_model_id": "auto",
   "router_model": "Supra-Router-51M",     // pinned + preloaded when enabled
+  "profiler_kind": "generative",           // "generative" (Supra) | "capability" (M4.5 ModernBERT)
+  "capability_threshold": 0.5,             // capability-kind only: sigmoid cutoff for math/code
   "classify_timeout_s": 3.0,
   "targets": {
     "small":  "<a fast, cheap chat model>",
@@ -238,12 +240,42 @@ Done: M1, M2, M3, M4.1, **M4.2** (Anthropic `/v1/messages` hook, commit
 sweeps (commit `140b69a`). **Routing admin UI** (Global Settings routing panel
 + per-model `enable_routing` gate) landed alongside this doc revision.
 
-Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`) and **M4.4
-passive idle-time sweeps** (this revision).
+Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
+passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.
 
-Remaining M4:
+### M4.5 — Classification-family profiler adapter
 
-1. **Classification-family profiler adapter** — single-forward-pass BERT-style routers behind the existing profiler interface.
+`profiler_kind: "capability"` swaps the generative Supra profiler for a
+single-forward-pass ModernBERT multi-label classifier
+(`massaindustries/modernbert-capability-classifier` by default; ModernBERT-large,
+apache-2.0, ~396M bf16), loaded via mlx-embeddings — the same seq-classification
+path the reranker uses. It stays behind the existing `RouterProfiler` contract
+(`classify(engine, text) -> (RouterFeatures, raw)`), selected by
+`routing.profiler_kind`. Generative remains the default; nothing changes unless
+you flip it.
+
+Key facts:
+
+- **Own model, not the engine pool.** The capability profiler owns its MLX model
+  (lazy-loaded, warmed at startup best-effort) and ignores the passed engine —
+  it's a classifier, not a chat engine, so `set_pinned` / `get_engine` don't
+  apply. For this kind `router_model` is an **HF repo id or local path** (passed
+  straight to `mlx_embeddings.load`), not a roster short-id.
+- **Score mapping.** The 6 capability axes → `RouterFeatures`: `coding ≥ threshold`
+  → `code`; `math_reasoning ≥ threshold` → `math`; argmax axis → `domain`
+  (telemetry); `route_token` is always None. The model has **no complexity head**,
+  so `complexity` is a 1–5 proxy from `max(coding, math_reasoning,
+  planning_agentic)` — enough to drive the binary policy's escalate rules; the
+  N-way table reads only `code`/`math` (axis) + `complexity` (tier). Live-verified:
+  code/math/agentic prompts → complexity 5, factual → 1.
+- **Gotcha (why the adapter forces `is_regression`).** mlx-embeddings applies
+  **softmax** to `num_labels>1` logits, which is wrong for this model's
+  *independent* per-axis sigmoid heads. The adapter sets `is_regression=True`
+  post-load so `_process_outputs` returns raw logits, then applies its own
+  `sigmoid`. Without this the six scores would be forced to sum to 1.
+- **Model must be downloadable.** First `warm_up` (or first request) fetches the
+  checkpoint from HF; pre-download for offline boxes. Failure is non-fatal —
+  warmup logs and the profiler lazy-loads, or classify fails open.
 
 ## M5 — dashboard polish
 

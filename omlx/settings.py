@@ -938,6 +938,13 @@ class RoutingSettings:
     enabled: bool = False
     virtual_model_id: str = "auto"
     router_model: str = "Supra-Router-51M"
+    # Profiler family: "generative" (Supra-style completion, default) or
+    # "capability" (single-forward-pass ModernBERT classifier, M4.5). For
+    # "capability", router_model is an HF repo id or local path to the
+    # classifier (mlx-embeddings loads it directly, not via the engine pool).
+    profiler_kind: str = "generative"
+    # Sigmoid cutoff for the capability profiler's math/code booleans.
+    capability_threshold: float = 0.5
     classify_timeout_s: float = 3.0
     targets: dict[str, str] = field(
         default_factory=lambda: {
@@ -962,6 +969,8 @@ class RoutingSettings:
             "enabled": self.enabled,
             "virtual_model_id": self.virtual_model_id,
             "router_model": self.router_model,
+            "profiler_kind": self.profiler_kind,
+            "capability_threshold": self.capability_threshold,
             "classify_timeout_s": self.classify_timeout_s,
             "targets": dict(self.targets),
             "policy": self.policy.to_dict(),
@@ -977,6 +986,8 @@ class RoutingSettings:
             enabled=data.get("enabled", False),
             virtual_model_id=data.get("virtual_model_id", "auto"),
             router_model=data.get("router_model", "Supra-Router-51M"),
+            profiler_kind=data.get("profiler_kind", "generative"),
+            capability_threshold=data.get("capability_threshold", 0.5),
             classify_timeout_s=data.get("classify_timeout_s", 3.0),
             targets=dict(
                 data.get(

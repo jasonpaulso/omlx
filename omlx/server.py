@@ -476,24 +476,48 @@ async def lifespan(app: FastAPI):
             _enabled_model_ids,
         )
         _server_state.routing_service = service
-        router_id = (
-            resolve_model_id(routing_settings.router_model)
-            or routing_settings.router_model
-        )
-        if _server_state.engine_pool.set_pinned(router_id, True):
-            logger.info(
-                "Routing enabled: virtual model %r -> targets %s (router %s pinned)",
-                routing_settings.virtual_model_id,
-                routing_settings.targets,
-                router_id,
-            )
+        if getattr(routing_settings, "profiler_kind", "generative") == "capability":
+            # The capability profiler owns its own ModernBERT classifier
+            # (loaded via mlx-embeddings, not the engine pool). Warm it up so
+            # the first routed request doesn't pay the cold load; best-effort.
+            try:
+                await service._profiler.warm_up()
+                logger.info(
+                    "Routing enabled: virtual model %r -> targets %s "
+                    "(capability profiler %r warmed)",
+                    routing_settings.virtual_model_id,
+                    routing_settings.targets,
+                    routing_settings.router_model,
+                )
+            except Exception as e:  # pragma: no cover - warmup is best-effort
+                logger.warning(
+                    "Routing enabled but capability profiler %r failed to "
+                    "warm up (%s); it will lazy-load on first request or fail "
+                    "open to %r",
+                    routing_settings.router_model,
+                    e,
+                    routing_settings.policy.fail_open_target,
+                )
         else:
-            logger.warning(
-                "Routing enabled but router model %r not found in pool; "
-                "classification will fail open to %r",
-                routing_settings.router_model,
-                routing_settings.policy.fail_open_target,
+            router_id = (
+                resolve_model_id(routing_settings.router_model)
+                or routing_settings.router_model
             )
+            if _server_state.engine_pool.set_pinned(router_id, True):
+                logger.info(
+                    "Routing enabled: virtual model %r -> targets %s "
+                    "(router %s pinned)",
+                    routing_settings.virtual_model_id,
+                    routing_settings.targets,
+                    router_id,
+                )
+            else:
+                logger.warning(
+                    "Routing enabled but router model %r not found in pool; "
+                    "classification will fail open to %r",
+                    routing_settings.router_model,
+                    routing_settings.policy.fail_open_target,
+                )
 
     # Startup: Suitability store + bench-result harvesting (always on;
     # writes only when benchmark runs complete, so idle cost is zero).
