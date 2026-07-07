@@ -75,22 +75,25 @@ def _now_iso() -> str:
 def _latest_per_bench(
     evals: list[dict[str, Any]], *, baseline_only: bool
 ) -> dict[str, dict[str, Any]]:
-    """Pick the latest record per bench, optionally restricted to baseline.
+    """Pick the authoritative record per bench, optionally baseline-only.
 
-    "Latest" is max by date; ties (including missing/equal dates) are
-    broken by list order, i.e. the later entry in `evals` wins.
+    Largest sample size wins; among equal n, max by date, with remaining
+    ties (missing/equal dates) broken by list order (later entry wins).
+    Rationale: a quick n=4 spot-check must not silently displace an n=100
+    run in the derived category scores — freshness only breaks ties
+    because model snapshots are immutable on disk.
     """
-    latest: dict[str, dict[str, Any]] = {}
-    latest_date: dict[str, str] = {}
+    best: dict[str, dict[str, Any]] = {}
+    best_key: dict[str, tuple[int, str]] = {}
     for record in evals:
         if baseline_only and not record.get("baseline"):
             continue
         bench = record["bench"]
-        date = record.get("date") or ""
-        if bench not in latest or date >= latest_date[bench]:
-            latest[bench] = record
-            latest_date[bench] = date
-    return latest
+        key = (int(record.get("n") or 0), record.get("date") or "")
+        if bench not in best or key >= best_key[bench]:
+            best[bench] = record
+            best_key[bench] = key
+    return best
 
 
 def _derive_categories(evals: list[dict[str, Any]]) -> dict[str, float]:

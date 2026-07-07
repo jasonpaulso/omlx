@@ -564,3 +564,35 @@ def test_all_models_returns_all_entries(tmp_path):
     store.ensure_model("a")
     store.ensure_model("b")
     assert set(store.all_models().keys()) == {"a", "b"}
+
+
+# --- sample-size authority (n beats freshness) ------------------------------
+
+
+def test_larger_n_beats_newer_smaller_run(tmp_path):
+    """A quick n=4 spot-check must not displace an n=100 run's score."""
+    store = make_store(tmp_path)
+    store.load()
+    store.record_eval(
+        "m", bench="mmlu", accuracy=0.60, n=100, baseline=True,
+        thinking=False, time_s=1.0, date="2026-07-01T00:00:00+00:00",
+    )
+    store.record_eval(
+        "m", bench="mmlu", accuracy=1.00, n=4, baseline=True,
+        thinking=False, time_s=1.0, date="2026-07-02T00:00:00+00:00",
+    )
+    assert store.get_model("m")["categories"]["knowledge"] == 0.60
+
+
+def test_equal_n_newer_wins(tmp_path):
+    store = make_store(tmp_path)
+    store.load()
+    store.record_eval(
+        "m", bench="mmlu", accuracy=0.60, n=8, baseline=True,
+        thinking=False, time_s=1.0, date="2026-07-01T00:00:00+00:00",
+    )
+    store.record_eval(
+        "m", bench="mmlu", accuracy=0.80, n=8, baseline=True,
+        thinking=False, time_s=1.0, date="2026-07-02T00:00:00+00:00",
+    )
+    assert store.get_model("m")["categories"]["knowledge"] == 0.80
