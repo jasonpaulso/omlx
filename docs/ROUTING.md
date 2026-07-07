@@ -285,6 +285,28 @@ the Roster Suitability page, the Global Settings routing panel, the per-model
 rough edges, empty/loading states, copy, and affordances introduced by M1–M4.
 Scope grows as the routing surfaces get real operator use.
 
+**M5.1 — Suitability page (done).** Four changes, all admin-UI only (JS +
+templates + i18n; no Python):
+
+- Suitability is no longer a top-level nav tab — it's the third sub-tab under
+  **Bench** (`?tab=bench&benchTab=suitability`), alongside Performance and
+  Intelligence. Moved in the desktop bench dropdown, the bench sub-tab strip,
+  and the mobile menu; `DASHBOARD_MAIN_TABS` drops `suitability`,
+  `DASHBOARD_BENCH_TABS` gains it, and the load/refresh lifecycle moved from the
+  `mainTab` watcher into `setBenchTab` + the `value === 'bench'` branch.
+- The Suitability results table gets a model-settings-style toolbar: text
+  search, a role filter, a health filter, a reset, and sortable Model / Role /
+  Health / Size / Load headers (on top of the existing per-axis sorts). Sort is
+  generalized in `suitModelIds()` via `suitSortValue()`; unranked rows (null
+  score) always sort last.
+- The three persistent cards (Config, Per-Axis Rankings, Table) are collapsible
+  with the same chevron pattern as the Performance tab's Metrics card
+  (`suitConfigOpen` / `suitRankingsOpen` / `suitTableOpen`).
+- Draft/assistant companions (`draft_companion` role) are omitted from both the
+  sweep picker and the results table. `suitIsDraftOrAssistant()` prefers the
+  server-assigned role and falls back to `classify_role()`'s name/size
+  heuristic when a model isn't in the table yet.
+
 ## Shelved
 
 - **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model). The routing admin UI and `enable_routing` gate are fork-only polish, not part of a minimal upstream patch. **Held pending rigorous validation** — a comprehensive report/audit of routing correctness and quality before anything is offered upstream. Check-in scheduled 2026-07-14.

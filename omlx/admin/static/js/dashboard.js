@@ -61,10 +61,10 @@
         'gemma4_unified_assistant',
         'qwen3_5_mtp',
     ]);
-    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'bench', 'suitability']);
+    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'bench']);
     const DASHBOARD_SETTINGS_TABS = new Set(['global', 'integrations', 'models']);
     const DASHBOARD_MODELS_TABS = new Set(['manager', 'downloader', 'quantizer', 'uploader']);
-    const DASHBOARD_BENCH_TABS = new Set(['throughput', 'accuracy']);
+    const DASHBOARD_BENCH_TABS = new Set(['throughput', 'accuracy', 'suitability']);
 
     // Default sort for the settings and manager model tables. Also the target
     // state for the "reset sort" action.
@@ -547,8 +547,14 @@
             suitTableLoading: false,
             suitSweepError: '',
             suitSkipped: null,        // { model_id: role } from the last sweep response
-            suitSortAxis: '',
-            suitSortDir: 'desc',
+            suitSortAxis: 'model',    // 'model' | 'role' | 'health' | 'size' | 'load' | <axis>
+            suitSortDir: 'asc',
+            suitSearch: '',
+            suitRoleFilter: 'all',
+            suitHealthFilter: 'all',
+            suitConfigOpen: true,
+            suitRankingsOpen: true,
+            suitTableOpen: true,
             suitRoleOptions: ['chat', 'draft_companion', 'embedding', 'reranker', 'router'],
             suitRoleSaving: {},       // { model_id: bool }
             suitExpandedModel: null,
@@ -668,11 +674,11 @@
                     if (!this.benchDeviceInfo) await this.loadBenchDeviceInfo();
                     await this.loadBenchState();
                     await this.loadAccState();
-                }
-                if (value === 'suitability') {
-                    await this.loadSuitabilityTable();
-                    await this.loadAccQueueStatus();
-                    this.startSuitabilityRefresh();
+                    if (this.benchTab === 'suitability') {
+                        await this.loadSuitabilityTable();
+                        await this.loadAccQueueStatus();
+                        this.startSuitabilityRefresh();
+                    }
                 } else {
                     this.stopSuitabilityRefresh();
                 }
@@ -3246,6 +3252,13 @@
                     this.loadBenchDeviceInfo();
                     this.loadBenchState();
                 }
+                if (tab === 'suitability') {
+                    this.loadSuitabilityTable();
+                    this.loadAccQueueStatus();
+                    this.startSuitabilityRefresh();
+                } else {
+                    this.stopSuitabilityRefresh();
+                }
             },
 
             // Accuracy benchmark functions
@@ -3645,26 +3658,95 @@
                 return Object.keys(this.suitTable.rankings).sort();
             },
 
+            // Draft/assistant companions are never ranked as routing targets,
+            // so they are omitted from both the sweep picker and the results
+            // table. Prefer the server-assigned role when the model is already
+            // in the suitability table; otherwise mirror classify_role()'s
+            // name/size heuristic client-side.
+            suitIsDraftOrAssistant(m) {
+                const role = this.suitTable.models?.[m.id]?.role;
+                if (role) return role === 'draft_companion';
+                if (this.isDflashDraftModel(m) || this.isVlmMtpDraftModel(m)) return true;
+                const lowered = (m.id || '').toLowerCase();
+                if (/embed|rerank|router/.test(lowered)) return false;
+                const sizeGb = m.estimated_size ? m.estimated_size / 1073741824 : null;
+                return sizeGb != null && sizeGb < 5.0;
+            },
+
+            suitPickerModels() {
+                return this.models.filter(m =>
+                    (m.model_type === 'llm' || m.model_type === 'vlm' || !m.model_type)
+                    && !this.suitIsDraftOrAssistant(m));
+            },
+
+            suitSortValue(modelId, key) {
+                const m = this.suitTable.models[modelId] || {};
+                switch (key) {
+                    case 'model': return modelId.toLowerCase();
+                    case 'role': return (m.role || 'chat').toLowerCase();
+                    case 'health': return m.health?.status === 'ok' ? 1 : 0;
+                    case 'size': return m.size_gb ?? -1;
+                    case 'load': return m.perf?.load_s ?? -1;
+                    default: return m.categories?.[key];   // axis score (may be null)
+                }
+            },
+
             suitModelIds() {
-                const ids = Object.keys(this.suitTable.models);
-                if (!this.suitSortAxis) return ids.sort();
+                let ids = Object.keys(this.suitTable.models)
+                    .filter(id => this.suitTable.models[id]?.role !== 'draft_companion');
+
+                const q = (this.suitSearch || '').trim().toLowerCase();
+                if (q) ids = ids.filter(id => id.toLowerCase().includes(q));
+
+                if (this.suitRoleFilter !== 'all') {
+                    ids = ids.filter(id => (this.suitTable.models[id]?.role || 'chat') === this.suitRoleFilter);
+                }
+                if (this.suitHealthFilter !== 'all') {
+                    const wantOk = this.suitHealthFilter === 'ok';
+                    ids = ids.filter(id => (this.suitTable.models[id]?.health?.status === 'ok') === wantOk);
+                }
+
+                const key = this.suitSortAxis || 'model';
                 return ids.sort((a, b) => {
-                    const av = this.suitTable.models[a].categories?.[this.suitSortAxis];
-                    const bv = this.suitTable.models[b].categories?.[this.suitSortAxis];
-                    if (av == null && bv == null) return 0;
+                    const av = this.suitSortValue(a, key);
+                    const bv = this.suitSortValue(b, key);
+                    // Nulls (unranked / no data) always sort last, regardless of dir.
+                    if (av == null && bv == null) return a.localeCompare(b);
                     if (av == null) return 1;
                     if (bv == null) return -1;
-                    return this.suitSortDir === 'asc' ? av - bv : bv - av;
+                    let cmp;
+                    if (typeof av === 'string') cmp = av.localeCompare(bv);
+                    else cmp = av - bv;
+                    return this.suitSortDir === 'asc' ? cmp : -cmp;
                 });
             },
 
-            suitSetSort(axis) {
-                if (this.suitSortAxis === axis) {
+            // String columns read best ascending first; numeric columns
+            // (scores, size, load) read best descending first.
+            suitSetSort(key) {
+                const stringCol = key === 'model' || key === 'role';
+                if (this.suitSortAxis === key) {
                     this.suitSortDir = this.suitSortDir === 'desc' ? 'asc' : 'desc';
                 } else {
-                    this.suitSortAxis = axis;
-                    this.suitSortDir = 'desc';
+                    this.suitSortAxis = key;
+                    this.suitSortDir = stringCol ? 'asc' : 'desc';
                 }
+            },
+
+            suitResetFilters() {
+                this.suitSearch = '';
+                this.suitRoleFilter = 'all';
+                this.suitHealthFilter = 'all';
+                this.suitSortAxis = 'model';
+                this.suitSortDir = 'asc';
+            },
+
+            get suitFiltersActive() {
+                return !!this.suitSearch
+                    || this.suitRoleFilter !== 'all'
+                    || this.suitHealthFilter !== 'all'
+                    || this.suitSortAxis !== 'model'
+                    || this.suitSortDir !== 'asc';
             },
 
             suitEvalsSorted(evals) {
@@ -3673,10 +3755,8 @@
 
             suitSelectAllModels() {
                 const selected = {};
-                for (const m of this.models) {
-                    if (m.model_type === 'llm' || m.model_type === 'vlm' || !m.model_type) {
-                        selected[m.id] = true;
-                    }
+                for (const m of this.suitPickerModels()) {
+                    selected[m.id] = true;
                 }
                 this.suitSelectedModels = selected;
             },
