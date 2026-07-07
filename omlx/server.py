@@ -51,7 +51,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi import Request as FastAPIRequest
@@ -108,6 +108,8 @@ from .api.markitdown import (
     request_has_file_parts,
     stream_messages_to_markdown_async,
 )
+from .routing import RoutingService
+from .settings import RoutingSettings
 
 # Import from new modular API
 from .api.openai_models import (
@@ -280,6 +282,7 @@ class ServerState:
     responses_store: ResponseStore = field(default_factory=ResponseStore)
     oq_manager: Optional[object] = None  # OQManager
     hf_uploader: Optional[object] = None  # HFUploader
+    routing_service: Optional[object] = None  # routing.RoutingService
 
 
 # Global server state instance
@@ -398,6 +401,44 @@ async def lifespan(app: FastAPI):
 
     _reset_boundary_snapshots_for_server()
 
+    # Startup: Semantic routing (opt-in). Pin the router model BEFORE
+    # preload_pinned_models() so it is resident before traffic.
+    routing_settings = (
+        getattr(_server_state.global_settings, "routing", None)
+        if _server_state.global_settings is not None
+        else None
+    )
+    if (
+        isinstance(routing_settings, RoutingSettings)
+        and routing_settings.enabled
+        and _server_state.engine_pool is not None
+    ):
+        service = RoutingService(routing_settings)
+
+        async def _routing_engine_getter(model_id: str):
+            return await _server_state.engine_pool.get_engine(model_id, force_lm=True)
+
+        service.set_engine_getter(_routing_engine_getter)
+        _server_state.routing_service = service
+        router_id = (
+            resolve_model_id(routing_settings.router_model)
+            or routing_settings.router_model
+        )
+        if _server_state.engine_pool.set_pinned(router_id, True):
+            logger.info(
+                "Routing enabled: virtual model %r -> targets %s (router %s pinned)",
+                routing_settings.virtual_model_id,
+                routing_settings.targets,
+                router_id,
+            )
+        else:
+            logger.warning(
+                "Routing enabled but router model %r not found in pool; "
+                "classification will fail open to %r",
+                routing_settings.router_model,
+                routing_settings.policy.fail_open_target,
+            )
+
     # Startup: Preload pinned models
     if _server_state.engine_pool is not None:
         await _server_state.engine_pool.preload_pinned_models()
@@ -468,6 +509,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: Save all-time stats, stop TTL task, process memory enforcer, etc.
     get_server_metrics().save_alltime()
+    if isinstance(_server_state.routing_service, RoutingService):
+        await _server_state.routing_service.close()
+        _server_state.routing_service = None
+        logger.info("Routing service stopped")
     if ttl_task is not None:
         ttl_task.cancel()
         try:
@@ -2534,6 +2579,12 @@ async def list_models(_: bool = Depends(verify_api_key)) -> ModelsResponse:
     ):
         models.append(ModelInfo(id=MARKITDOWN_MODEL_ID, owned_by="omlx"))
 
+    # Semantic routing virtual model (discoverable by agent clients)
+    if isinstance(_server_state.routing_service, RoutingService):
+        virtual_id = _server_state.routing_service.settings.virtual_model_id
+        if not any(m.id == virtual_id for m in models):
+            models.append(ModelInfo(id=virtual_id, owned_by="omlx"))
+
     return ModelsResponse(data=models)
 
 
@@ -3094,6 +3145,38 @@ async def create_chat_completion(
             detail="Server is busy with oQ quantization. Please try again after quantization completes.",
         )
 
+    # Semantic routing: requests naming the virtual model id are classified
+    # and rewritten to a concrete target before engine acquisition. Concrete
+    # model ids bypass this entirely. route_chat_request() never raises
+    # (fail-open), so a routing bug cannot 5xx a user request.
+    route_decision = None
+    routing_request_id: Optional[str] = None
+    routing_service = _server_state.routing_service
+    if not isinstance(routing_service, RoutingService):
+        routing_service = None
+    if (
+        routing_service is not None
+        and request.model == routing_service.settings.virtual_model_id
+    ):
+        routing_request_id = http_request.headers.get(
+            "x-request-id"
+        ) or f"route-{uuid.uuid4().hex[:12]}"
+        route_decision = await routing_service.route_chat_request(
+            messages=request.messages,
+            has_tools=bool(request.tools),
+            request_id=routing_request_id,
+            stream=bool(request.stream),
+            endpoint="chat",
+        )
+        logger.info(
+            "Routing: %r -> %r (rule=%s, classify_ms=%.0f)",
+            request.model,
+            route_decision.target,
+            route_decision.rule_fired,
+            route_decision.classify_ms,
+        )
+        request.model = route_decision.target
+
     lease = _LLMEngineLease()
     try:
         load_start = time.perf_counter()
@@ -3420,6 +3503,19 @@ async def create_chat_completion(
         await _raise_if_llm_lease_abort_requested(lease)
 
         if request.stream:
+            routing_on_complete = None
+            if route_decision is not None and routing_service is not None:
+
+                def routing_on_complete(
+                    tokens: int, reason: Optional[str], gen_ms: float
+                ) -> None:
+                    routing_service.record_outcome(
+                        routing_request_id,
+                        completion_tokens=tokens,
+                        finish_reason=reason,
+                        gen_ms=gen_ms,
+                    )
+
             # Pre-mint the completion id so the keepalive frame (emitted before the
             # generator starts) can share it. See _chat_keepalive_chunk.
             response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -3429,6 +3525,8 @@ async def create_chat_completion(
             sse_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
             if response_format_warning:
                 sse_headers["Warning"] = response_format_warning
+            if route_decision is not None:
+                sse_headers["x-omlx-route"] = route_decision.header_value
             return StreamingResponse(
                 _release_after_stream(
                     _with_sse_keepalive(
@@ -3439,6 +3537,7 @@ async def create_chat_completion(
                             model_load_duration=model_load_duration,
                             resolved_model=resolved_model,
                             response_id=response_id,
+                            on_complete=routing_on_complete,
                             **chat_kwargs,
                         ),
                         http_request=http_request,
@@ -3531,6 +3630,14 @@ async def create_chat_completion(
 
             finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
+            if route_decision is not None and routing_service is not None:
+                routing_service.record_outcome(
+                    routing_request_id,
+                    completion_tokens=output.completion_tokens,
+                    finish_reason=finish_reason,
+                    gen_ms=elapsed * 1000.0,
+                )
+
             return ChatCompletionResponse(
                 model=request.model,
                 choices=[
@@ -3564,6 +3671,9 @@ async def create_chat_completion(
         json_headers = (
             {"Warning": response_format_warning} if response_format_warning else None
         )
+        if route_decision is not None:
+            json_headers = dict(json_headers or {})
+            json_headers["x-omlx-route"] = route_decision.header_value
         return StreamingResponse(
             _release_after_stream(
                 _with_json_keepalive(http_request, _build_chat_completion()),
@@ -4235,6 +4345,7 @@ async def stream_chat_completion(
     model_load_duration: float = 0.0,
     resolved_model: Optional[str] = None,
     response_id: Optional[str] = None,
+    on_complete: Optional[Callable[[int, Optional[str], float], None]] = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -4570,6 +4681,16 @@ async def stream_chat_completion(
             f"max_tokens={kwargs.get('max_tokens')}, "
             f"request_max_tokens={request.max_tokens}"
         )
+
+        if on_complete is not None:
+            try:
+                on_complete(
+                    last_output.completion_tokens,
+                    finish_reason,
+                    total_duration * 1000.0,
+                )
+            except Exception as exc:  # routing telemetry must never break a stream
+                logger.debug("Routing on_complete callback failed: %s", exc)
 
         # Emit usage chunk if requested
         if request.stream_options and request.stream_options.include_usage:
