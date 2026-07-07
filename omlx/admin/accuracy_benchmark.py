@@ -177,6 +177,11 @@ def add_to_queue(request: AccuracyBenchmarkRequest) -> None:
     _queue.append(request)
 
 
+def is_benchmark_active() -> Optional[str]:
+    """Return the in-progress model_id if a benchmark run is active, else None."""
+    return _current_model if _queue_running else None
+
+
 def get_queue_status() -> dict:
     """Get current queue status."""
     last_progress = None

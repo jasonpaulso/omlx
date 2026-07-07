@@ -2001,6 +2001,18 @@ async def unload_model(
     is_admin: bool = Depends(require_admin),
 ):
     """Manually unload a model from memory."""
+    from .accuracy_benchmark import is_benchmark_active
+
+    active_model = is_benchmark_active()
+    if active_model is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Accuracy benchmark in progress (model {active_model}); "
+                "cancel the run or wait for it to finish"
+            ),
+        )
+
     engine_pool = _get_engine_pool()
     if engine_pool is None:
         raise HTTPException(status_code=503, detail="Engine pool not initialized")
