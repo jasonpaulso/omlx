@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import resource
+import signal
 import subprocess
 import tempfile
 import time
@@ -78,6 +79,21 @@ def _set_resource_limits():
         pass
 
 
+def _kill_process_group(process: "subprocess.Popen") -> None:
+    """Kill a timed-out subprocess and every descendant it spawned.
+
+    subprocess.run()'s own timeout handling only signals the direct child
+    pid; a generated program that forks/spawns its own children leaves them
+    running as orphans after the timeout fires. start_new_session=True puts
+    the child in its own process group, so killpg reaches the whole tree.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()
+
+
 def _execute_code(code: str, stdin_input: str = "") -> tuple[str, bool, str]:
     """Execute Python code in a subprocess with safety limits.
 
@@ -91,12 +107,13 @@ def _execute_code(code: str, stdin_input: str = "") -> tuple[str, bool, str]:
         tmp_path = f.name
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["python3", tmp_path],
-            input=stdin_input,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=EXEC_TIMEOUT_SECONDS,
+            start_new_session=True,
             preexec_fn=_set_resource_limits,
             env={
                 "PATH": os.environ.get("PATH", "/usr/bin:/usr/local/bin"),
@@ -104,12 +121,17 @@ def _execute_code(code: str, stdin_input: str = "") -> tuple[str, bool, str]:
                 "LANG": "en_US.UTF-8",
             },
         )
-        if result.returncode == 0:
-            return result.stdout, True, ""
+        try:
+            stdout, stderr = process.communicate(
+                input=stdin_input, timeout=EXEC_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            return "", False, "Execution timed out"
+        if process.returncode == 0:
+            return stdout, True, ""
         else:
-            return result.stdout, False, result.stderr[:500]
-    except subprocess.TimeoutExpired:
-        return "", False, "Execution timed out"
+            return stdout, False, stderr[:500]
     except Exception as e:
         return "", False, str(e)[:500]
     finally:

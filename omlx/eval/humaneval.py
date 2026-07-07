@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import resource
+import signal
 import subprocess
 import tempfile
 import time
@@ -98,6 +99,21 @@ def _set_resource_limits():
         pass
 
 
+def _kill_process_group(process: "subprocess.Popen") -> None:
+    """Kill a timed-out subprocess and every descendant it spawned.
+
+    subprocess.run()'s own timeout handling only signals the direct child
+    pid; a generated program that forks/spawns its own children leaves them
+    running as orphans after the timeout fires. start_new_session=True puts
+    the child in its own process group, so killpg reaches the whole tree.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()
+
+
 def _execute_with_tests(code: str, test_code: str, entry_point: str) -> tuple[bool, str]:
     """Execute generated code with test cases.
 
@@ -118,11 +134,13 @@ check({entry_point})
         tmp_path = f.name
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["python3", tmp_path],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=EXEC_TIMEOUT_SECONDS,
+            start_new_session=True,
             preexec_fn=_set_resource_limits,
             env={
                 "PATH": os.environ.get("PATH", "/usr/bin:/usr/local/bin"),
@@ -130,12 +148,15 @@ check({entry_point})
                 "LANG": "en_US.UTF-8",
             },
         )
-        if result.returncode == 0:
+        try:
+            _, stderr = process.communicate(timeout=EXEC_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            return False, "Execution timed out"
+        if process.returncode == 0:
             return True, ""
         else:
-            return False, result.stderr[:500]
-    except subprocess.TimeoutExpired:
-        return False, "Execution timed out"
+            return False, stderr[:500]
     except Exception as e:
         return False, str(e)[:500]
     finally:
