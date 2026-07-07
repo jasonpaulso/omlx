@@ -776,6 +776,184 @@ class IntegrationSettings:
 
 
 @dataclass
+class RoutingAgenticOverrideSettings:
+    """Overrides that force routing to the big model regardless of features."""
+
+    on_tools: bool = True
+    max_user_turns: int = 3
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "on_tools": self.on_tools,
+            "max_user_turns": self.max_user_turns,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingAgenticOverrideSettings:
+        """Create from dictionary."""
+        return cls(
+            on_tools=data.get("on_tools", True),
+            max_user_turns=data.get("max_user_turns", 3),
+        )
+
+
+@dataclass
+class RoutingPolicySettings:
+    """Deterministic escalation thresholds for the routing policy."""
+
+    escalate_complexity_at: int = 4
+    escalate_math_complexity_at: int = 3
+    escalate_code_complexity_at: int = 3
+    agentic_override: RoutingAgenticOverrideSettings = field(
+        default_factory=RoutingAgenticOverrideSettings
+    )
+    fail_open_target: str = "big"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "escalate_complexity_at": self.escalate_complexity_at,
+            "escalate_math_complexity_at": self.escalate_math_complexity_at,
+            "escalate_code_complexity_at": self.escalate_code_complexity_at,
+            "agentic_override": self.agentic_override.to_dict(),
+            "fail_open_target": self.fail_open_target,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingPolicySettings:
+        """Create from dictionary."""
+        return cls(
+            escalate_complexity_at=data.get("escalate_complexity_at", 4),
+            escalate_math_complexity_at=data.get("escalate_math_complexity_at", 3),
+            escalate_code_complexity_at=data.get("escalate_code_complexity_at", 3),
+            agentic_override=RoutingAgenticOverrideSettings.from_dict(
+                data.get("agentic_override", {})
+            ),
+            fail_open_target=data.get("fail_open_target", "big"),
+        )
+
+
+@dataclass
+class RoutingTelemetrySettings:
+    """Telemetry logging settings for routing decisions."""
+
+    enabled: bool = True
+    path: str = "~/.omlx/routing_decisions.jsonl"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "path": self.path,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingTelemetrySettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", True),
+            path=data.get("path", "~/.omlx/routing_decisions.jsonl"),
+        )
+
+
+@dataclass
+class RoutingTableDispatchSettings:
+    """N-way dispatch driven by the measured suitability table (M3).
+
+    Off by default; when enabled and the table has data, dispatch picks
+    per-axis leaders instead of the binary small/big targets. Binary
+    targets remain the fallback for axes with no measured candidates."""
+
+    enabled: bool = False
+    default_target: str | None = None
+    residency_epsilon: float = 0.02
+    max_interactive_median_q_time_s: float = 30.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "default_target": self.default_target,
+            "residency_epsilon": self.residency_epsilon,
+            "max_interactive_median_q_time_s": self.max_interactive_median_q_time_s,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingTableDispatchSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            default_target=data.get("default_target"),
+            residency_epsilon=data.get("residency_epsilon", 0.02),
+            max_interactive_median_q_time_s=data.get(
+                "max_interactive_median_q_time_s", 30.0
+            ),
+        )
+
+
+@dataclass
+class RoutingSettings:
+    """Semantic routing settings: classify requests to a virtual model id
+    and rewrite them to a concrete target model. Defaults OFF."""
+
+    enabled: bool = False
+    virtual_model_id: str = "auto"
+    router_model: str = "Supra-Router-51M"
+    classify_timeout_s: float = 3.0
+    targets: dict[str, str] = field(
+        default_factory=lambda: {
+            "small": "gpt-oss-20b-OptiQ-4bit",
+            "big": "gpt-oss-120b-Fable-5-Distilled",
+        }
+    )
+    policy: RoutingPolicySettings = field(default_factory=RoutingPolicySettings)
+    telemetry: RoutingTelemetrySettings = field(
+        default_factory=RoutingTelemetrySettings
+    )
+    table_dispatch: RoutingTableDispatchSettings = field(
+        default_factory=RoutingTableDispatchSettings
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "virtual_model_id": self.virtual_model_id,
+            "router_model": self.router_model,
+            "classify_timeout_s": self.classify_timeout_s,
+            "targets": dict(self.targets),
+            "policy": self.policy.to_dict(),
+            "telemetry": self.telemetry.to_dict(),
+            "table_dispatch": self.table_dispatch.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            virtual_model_id=data.get("virtual_model_id", "auto"),
+            router_model=data.get("router_model", "Supra-Router-51M"),
+            classify_timeout_s=data.get("classify_timeout_s", 3.0),
+            targets=dict(
+                data.get(
+                    "targets",
+                    {
+                        "small": "gpt-oss-20b-OptiQ-4bit",
+                        "big": "gpt-oss-120b-Fable-5-Distilled",
+                    },
+                )
+            ),
+            policy=RoutingPolicySettings.from_dict(data.get("policy", {})),
+            telemetry=RoutingTelemetrySettings.from_dict(data.get("telemetry", {})),
+            table_dispatch=RoutingTableDispatchSettings.from_dict(
+                data.get("table_dispatch", {})
+            ),
+        )
+
+
+@dataclass
 class GlobalSettings:
     """
     Global settings for oMLX.
@@ -806,6 +984,7 @@ class GlobalSettings:
     idle_timeout: ModelIdleTimeoutSettings = field(
         default_factory=ModelIdleTimeoutSettings
     )
+    routing: RoutingSettings = field(default_factory=RoutingSettings)
 
     @classmethod
     def load(
@@ -903,6 +1082,8 @@ class GlobalSettings:
                 self.idle_timeout = ModelIdleTimeoutSettings.from_dict(
                     data["idle_timeout"]
                 )
+            if "routing" in data:
+                self.routing = RoutingSettings.from_dict(data["routing"])
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse settings file {path}: {e}")
@@ -1169,6 +1350,7 @@ class GlobalSettings:
             "integrations": self.integrations.to_dict(),
             "ui": self.ui.to_dict(),
             "idle_timeout": self.idle_timeout.to_dict(),
+            "routing": self.routing.to_dict(),
         }
 
         try:
@@ -1453,6 +1635,7 @@ class GlobalSettings:
             "integrations": self.integrations.to_dict(),
             "ui": self.ui.to_dict(),
             "idle_timeout": self.idle_timeout.to_dict(),
+            "routing": self.routing.to_dict(),
         }
 
 

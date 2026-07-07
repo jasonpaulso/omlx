@@ -13,7 +13,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -24,6 +24,27 @@ _accuracy_runs: dict[str, "AccuracyBenchmarkRun"] = {}
 
 # Accumulated results — persists until explicit reset
 _accumulated_results: list[dict] = []
+
+# Optional external observers (e.g. the suitability harvester). Both are
+# best-effort: a raising sink is logged and never allowed to break a run.
+_result_sink: Optional[Callable[[dict], None]] = None
+_run_status_sink: Optional[Callable[[str, str, Optional[str]], None]] = None
+
+
+def set_result_sink(sink: Optional[Callable[[dict], None]]) -> None:
+    """Register a callback invoked with each completed benchmark result dict."""
+    global _result_sink
+    _result_sink = sink
+
+
+def set_run_status_sink(
+    sink: Optional[Callable[[str, str, Optional[str]], None]],
+) -> None:
+    """Register a callback invoked as (model_id, status, error_message)
+    once per run, when it reaches a terminal state."""
+    global _run_status_sink
+    _run_status_sink = sink
+
 
 # Server-side queue
 _queue: list["AccuracyBenchmarkRequest"] = []
@@ -47,6 +68,10 @@ class AccuracyBenchmarkRequest(BaseModel):
     benchmarks: dict[str, int]  # name -> sample_size (0 = full dataset)
     batch_size: int = 1
     enable_thinking: bool = False
+    # Bypass all custom per-model settings (sampling + load-time variants)
+    # and evaluate with stock defaults. Custom settings were shown to
+    # corrupt suitability eval scores.
+    baseline_mode: bool = False
 
     @field_validator("batch_size")
     @classmethod
@@ -347,13 +372,24 @@ async def run_accuracy_benchmark(
             "total": len(request.benchmarks),
         })
 
+        # Baseline mode: force the target model to load and sample with
+        # completely stock settings (no custom sampling, no draft/MTP/KV
+        # variants). Registered before load so engine_pool sees stock
+        # settings at engine-construction time; cleared in the finally
+        # block below regardless of how the run ends.
+        if request.baseline_mode and engine_pool._settings_manager is not None:
+            engine_pool._settings_manager.set_baseline_ids({request.model_id})
+
         # Force LM engine for accuracy benchmarks — text-only tasks
         # don't need VLM and the VLM adapter can produce empty responses.
+        load_start = time.perf_counter()
         engine = await engine_pool.get_engine(request.model_id, force_lm=True)
+        load_s = time.perf_counter() - load_start
 
-        # Load model sampling settings
+        # Load model sampling settings (skipped in baseline mode — stock
+        # defaults only).
         sampling_kwargs = {}
-        if engine_pool._settings_manager is not None:
+        if not request.baseline_mode and engine_pool._settings_manager is not None:
             ms = engine_pool._settings_manager.get_settings(request.model_id)
             if ms.top_p is not None:
                 sampling_kwargs["top_p"] = ms.top_p
@@ -468,6 +504,9 @@ async def run_accuracy_benchmark(
                 "total": result.total_questions,
                 "correct": result.correct_count,
                 "time_s": round(result.time_seconds, 1),
+                "load_s": round(load_s, 2),
+                "baseline": request.baseline_mode,
+                "run_id": run.bench_id,
                 "question_results": [
                     {
                         "id": qr.question_id,
@@ -489,6 +528,12 @@ async def run_accuracy_benchmark(
 
             # Accumulate persistently
             _accumulated_results.append(result_data)
+
+            if _result_sink is not None:
+                try:
+                    _result_sink(result_data)
+                except Exception:
+                    logger.exception("Result sink failed")
 
             run.results.append(result_data)
             completed += 1
@@ -539,5 +584,15 @@ async def run_accuracy_benchmark(
             "message": str(e),
         })
     finally:
+        if _run_status_sink is not None:
+            try:
+                _run_status_sink(
+                    request.model_id, run.status, run.error_message or None
+                )
+            except Exception:
+                logger.exception("Run status sink failed")
+
         # Re-enable TTL auto-unload
         engine_pool._suppress_ttl = False
+        if request.baseline_mode and engine_pool._settings_manager is not None:
+            engine_pool._settings_manager.clear_baseline_ids()
