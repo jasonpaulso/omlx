@@ -2450,6 +2450,48 @@ def _with_markitdown_status(status: dict) -> dict:
     return augmented
 
 
+def _with_routing_virtual_status(status: dict) -> dict:
+    """Add the semantic-routing virtual model to a models-status payload.
+
+    Clients gate image attachments on ``model_type`` from /v1/models/status;
+    without this entry the virtual id looks text-only. It reports "vlm"
+    only when a vision target is configured (shape:vision has somewhere
+    to send image parts).
+    """
+    if not isinstance(_server_state.routing_service, RoutingService):
+        return status
+
+    settings = _server_state.routing_service.settings
+    virtual_id = settings.virtual_model_id
+    augmented = dict(status)
+    models = list(augmented.get("models", []))
+    if not any(m.get("id") == virtual_id for m in models):
+        models.append(
+            {
+                "id": virtual_id,
+                "model_path": "virtual://routing",
+                "loaded": True,
+                "is_loading": False,
+                "loading_started_at": None,
+                "estimated_size": 0,
+                "actual_size": 0,
+                "pinned": False,
+                "engine_type": "routing",
+                "model_type": "vlm" if settings.targets.get("vision") else "llm",
+                "config_model_type": "routing",
+                "thinking_default": None,
+                "preserve_thinking_default": None,
+                "source_type": "builtin",
+                "source_repo_id": None,
+                "last_access": None,
+            }
+        )
+    augmented["models"] = models
+    augmented["model_count"] = len(models)
+    augmented["loaded_count"] = sum(1 for m in models if m.get("loaded"))
+    return augmented
+
+
 def _with_exposed_profile_status(status: dict) -> dict:
     settings_manager = _server_state.settings_manager
     if settings_manager is None:
@@ -2766,8 +2808,10 @@ async def list_models_status(_: bool = Depends(verify_api_key)):
     if _server_state.engine_pool is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
 
-    status = _with_exposed_profile_status(
-        _with_markitdown_status(_server_state.engine_pool.get_status())
+    status = _with_routing_virtual_status(
+        _with_exposed_profile_status(
+            _with_markitdown_status(_server_state.engine_pool.get_status())
+        )
     )
     for m in status["models"]:
         model_id = m["id"]
