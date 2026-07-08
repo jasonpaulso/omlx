@@ -44,7 +44,10 @@ CATEGORY_AXES: dict[str, str] = {
 }
 
 # Checked in this order, case-insensitive substring match; first match wins.
-_DRAFT_NAME_PATTERNS = ("dflash", "mtp", "-assistant", "draft")
+# "mtp" is deliberately NOT here: full chat models ship with preserved MTP
+# heads (e.g. Qwen3.6-27B-*-mtp), while extracted MTP drafter heads are
+# small enough that the <5 GB size gate classifies them as companions.
+_DRAFT_NAME_PATTERNS = ("dflash", "-assistant", "draft")
 _DRAFT_COMPANION_SIZE_GB = 5.0
 
 

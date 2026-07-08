@@ -72,7 +72,7 @@ Persistent JSON (`~/.omlx/suitability.json`), versioned, atomic writes. Per mode
 
 - **Category scores derive from baseline evals only.** A non-baseline (custom-settings) run is stored as provenance but never feeds a score.
 - **Largest sample size is authoritative per bench**; freshness only breaks ties. A quick n=4 spot-check must not displace an n=100 run. (Model snapshots on disk are immutable, so a newer tiny run carries no extra information — learned the hard way when a UI-test n=4 run briefly displaced an n=12 score.)
-- **Role taxonomy**: chat / draft_companion / embedding / reranker / router. Name-pattern first (dflash/mtp/-assistant/draft/embed/rerank/router), then a size heuristic (<5 GB ⇒ companion). Chat models are ≥5 GB; smaller things are spec-decode companions and are **excluded from standalone suitability evals** (benching a draft model standalone is a category error). User role overrides win and persist.
+- **Role taxonomy**: chat / draft_companion / embedding / reranker / router. Name-pattern first (dflash/-assistant/draft/embed/rerank/router), then a size heuristic (<5 GB ⇒ companion). "mtp" is deliberately not a name pattern: full chat models ship with preserved MTP heads (e.g. `Qwen3.6-27B-*-mtp`); extracted drafter heads are caught by the size gate. Chat models are ≥5 GB; smaller things are spec-decode companions and are **excluded from standalone suitability evals** (benching a draft model standalone is a category error). User role overrides win and persist.
 - **Tables are per-host.** tps/load times and even fit differ across machines; the store stamps the host. Each machine runs its own sweep.
 
 ### Baseline mode

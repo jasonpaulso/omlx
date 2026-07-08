@@ -18,9 +18,16 @@ def make_store(tmp_path, name: str = "suitability.json") -> SuitabilityStore:
 
 def test_classify_role_draft_name_patterns():
     assert classify_role("qwen-dflash-3b", None) == "draft_companion"
-    assert classify_role("model-mtp-head", None) == "draft_companion"
     assert classify_role("llama-70b-assistant", None) == "draft_companion"
     assert classify_role("some-draft-model", None) == "draft_companion"
+
+
+def test_classify_role_mtp_name_is_not_a_draft_signal():
+    # Full chat models keep their MTP heads; "mtp" in the name must not
+    # flag them as companions. Extracted drafter heads are caught by size.
+    assert classify_role("Qwen3.6-27B-oQ4e-mtp", 16.0) == "chat"
+    assert classify_role("model-mtp-head", None) == "chat"
+    assert classify_role("qwen3-mtp-drafter", 1.2) == "draft_companion"
 
 
 def test_classify_role_embedding_reranker_router_names():
