@@ -71,6 +71,11 @@
     const MODELS_SORT_DEFAULT = { by: 'id', order: 'asc' };
     const MANAGER_SORT_DEFAULT = { by: 'name', order: 'asc' };
 
+    // Default sort for the settings and manager model tables. Also the target
+    // state for the "reset sort" action.
+    const MODELS_SORT_DEFAULT = { by: 'id', order: 'asc' };
+    const MANAGER_SORT_DEFAULT = { by: 'name', order: 'asc' };
+
     function dashboard() {
         return {
             // Theme
