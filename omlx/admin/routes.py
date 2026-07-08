@@ -5977,14 +5977,14 @@ async def start_suitability_sweep(
 @router.get("/api/suitability/table")
 async def get_suitability_table(is_admin: bool = Depends(require_admin)):
     """Return the persistent suitability table plus per-axis rankings."""
-    from ..routing.store import CATEGORY_AXES
+    from ..routing.store import DISPATCH_AXES
     from .suitability import get_store
 
     store = get_store()
     if store is None:
         raise HTTPException(status_code=503, detail="Suitability store not initialized")
 
-    axes = sorted(set(CATEGORY_AXES.values()))
+    axes = sorted(DISPATCH_AXES)
     return {
         "models": store.all_models(),
         "rankings": {axis: store.ranked(axis) for axis in axes},
