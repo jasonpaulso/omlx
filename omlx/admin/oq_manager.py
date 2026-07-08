@@ -175,13 +175,21 @@ class OQManager:
                 if not model_dir.exists():
                     continue
                 for subdir in sorted(model_dir.iterdir()):
-                    if not subdir.is_dir():
+                    if not subdir.is_dir() or subdir.name.startswith("."):
                         continue
                     candidates = []
                     if (subdir / "config.json").exists():
                         candidates.append(subdir)
                     else:
-                        for child in sorted(subdir.iterdir()):
+                        try:
+                            children = sorted(subdir.iterdir())
+                        except OSError:
+                            # Volume roots carry TCC-protected dirs
+                            # (.Spotlight-V100, .fseventsd) that EPERM on
+                            # listing even for the owner; one bad dir must
+                            # not fail the whole scan.
+                            continue
+                        for child in children:
                             if child.is_dir() and (child / "config.json").exists():
                                 candidates.append(child)
 
