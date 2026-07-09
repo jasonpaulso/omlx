@@ -480,8 +480,8 @@
 
             // Accuracy benchmark state
             accModelId: '',
-            accBenchmarks: { mmlu: true, mmlu_pro: false, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: true, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: true, mbpp: false, livecodebench: false, bbq: false, safetybench: false },
-            accSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300 },
+            accBenchmarks: { mmlu: true, mmlu_pro: false, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: true, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: true, mbpp: false, livecodebench: false, bbq: false, safetybench: false, toolcall: false },
+            accSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300, toolcall: 300 },
             accBenchmarkGroups: [
                 {
                     name: 'Knowledge',
@@ -524,6 +524,12 @@
                         { key: 'safetybench', label: 'SafetyBench', desc: 'Safety · 7 categories', fullSize: 11435, sizes: [30, 50, 100, 200, 300, 500, 1000, 2000] },
                     ],
                 },
+                {
+                    name: 'Agentic',
+                    benchmarks: [
+                        { key: 'toolcall', label: 'ToolCall', desc: 'Tool-call correctness · 4 categories', fullSize: 300, sizes: [30, 50, 100, 200, 300] },
+                    ],
+                },
             ],
             accBatchSize: 1,
             accEnableThinking: false,
@@ -540,8 +546,8 @@
 
             // Roster Suitability state
             suitSelectedModels: {},   // { model_id: bool }
-            suitBenchmarks: { mmlu: false, mmlu_pro: true, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: false, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: false, mbpp: false, livecodebench: true, bbq: false, safetybench: false },
-            suitSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300 },
+            suitBenchmarks: { mmlu: false, mmlu_pro: true, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: false, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: false, mbpp: false, livecodebench: true, bbq: false, safetybench: false, toolcall: false },
+            suitSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300, toolcall: 300 },
             suitBatchSize: 1,
             suitTable: { models: {}, rankings: {} },
             suitTableLoading: false,

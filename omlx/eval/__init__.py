@@ -21,6 +21,7 @@ from .mbpp import MBPPBenchmark
 from .mmlu import MMLUBenchmark
 from .mmlu_pro import MMLUProBenchmark
 from .safetybench import SafetyBenchBenchmark
+from .toolcall import ToolCallBenchmark
 from .truthfulqa import TruthfulQABenchmark
 from .winogrande import WinograndeBenchmark
 
@@ -41,6 +42,7 @@ BENCHMARKS: dict[str, type[BaseBenchmark]] = {
     "livecodebench": LiveCodeBenchBenchmark,
     "bbq": BBQBenchmark,
     "safetybench": SafetyBenchBenchmark,
+    "toolcall": ToolCallBenchmark,
 }
 
 __all__ = [
@@ -61,4 +63,5 @@ __all__ = [
     "LiveCodeBenchBenchmark",
     "BBQBenchmark",
     "SafetyBenchBenchmark",
+    "ToolCallBenchmark",
 ]

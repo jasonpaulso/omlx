@@ -41,6 +41,7 @@ CATEGORY_AXES: dict[str, str] = {
     "winogrande": "reasoning",
     "bbq": "safety",
     "safetybench": "safety",
+    "toolcall": "agentic",
 }
 
 # Axes the router actually dispatches on (table.axis_for). reasoning/safety

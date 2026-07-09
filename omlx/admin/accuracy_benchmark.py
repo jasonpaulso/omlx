@@ -70,6 +70,7 @@ VALID_BENCHMARKS = [
     "livecodebench",
     "bbq",
     "safetybench",
+    "toolcall",
 ]
 
 
