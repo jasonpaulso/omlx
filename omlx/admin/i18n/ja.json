@@ -863,5 +863,6 @@
   "suitability.axis.code": "Code",
   "suitability.axis.knowledge": "Knowledge",
   "suitability.axis.reasoning": "Reasoning",
-  "suitability.axis.safety": "Safety"
+  "suitability.axis.safety": "Safety",
+  "suitability.axis.agentic": "Agentic"
 }
