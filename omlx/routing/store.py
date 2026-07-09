@@ -47,7 +47,7 @@ CATEGORY_AXES: dict[str, str] = {
 # Axes the router actually dispatches on (table.axis_for). reasoning/safety
 # benches still score into categories (and the overall mean) but get no
 # rankings surface of their own.
-DISPATCH_AXES: tuple[str, ...] = ("code", "knowledge", "math")
+DISPATCH_AXES: tuple[str, ...] = ("agentic", "code", "knowledge", "math")
 
 # Checked in this order, case-insensitive substring match; first match wins.
 # "mtp" is deliberately NOT here: full chat models ship with preserved MTP

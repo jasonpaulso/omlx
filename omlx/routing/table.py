@@ -8,6 +8,7 @@ caller's binary fallback.
 
 Selection order:
 1. Axis from features: code flag -> "code", math flag -> "math",
+   planning_agentic domain -> "agentic" (capability profiler only),
    else "knowledge" (the general-prompt axis; mmlu-backed).
 2. Candidates: healthy chat models ranked on that axis, minus models whose
    measured median answer latency exceeds the interactive budget (the
@@ -63,11 +64,16 @@ def _overall_score(entry: dict) -> float | None:
 
 def axis_for(features) -> str:
     """Map router features to a suitability axis. Code beats math on ties
-    (a prompt flagged both is usually a programming task with math in it)."""
+    (a prompt flagged both is usually a programming task with math in it);
+    both beat agentic (a coding-agent prompt scoring high on both stays
+    code). Only the capability profiler emits a "planning_agentic" domain,
+    so generative (Supra) installs never take the agentic branch."""
     if features is not None and getattr(features, "code", False):
         return "code"
     if features is not None and getattr(features, "math", False):
         return "math"
+    if features is not None and getattr(features, "domain", None) == "planning_agentic":
+        return "agentic"
     return "knowledge"
 
 

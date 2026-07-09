@@ -157,6 +157,43 @@ class TestChoose:
         assert c.disabled == []
 
 
+def afeats(domain="planning_agentic", math=False, code=False, complexity=2):
+    return RouterFeatures(
+        domain=domain, complexity=complexity, math=math, code=code, route_token=None
+    )
+
+
+class TestAgenticDispatch:
+    def test_axis_for_agentic_domain(self):
+        assert axis_for(afeats()) == "agentic"
+
+    def test_axis_for_code_beats_agentic(self):
+        assert axis_for(afeats(code=True)) == "code"
+
+    def test_axis_for_math_beats_agentic(self):
+        assert axis_for(afeats(math=True)) == "math"
+
+    def test_axis_for_non_agentic_domain_is_knowledge(self):
+        assert axis_for(afeats(domain="creative_writing")) == "knowledge"
+        assert axis_for(afeats(domain=None)) == "knowledge"
+
+    def test_agentic_axis_leader_wins(self):
+        models = {
+            "agent": entry(categories={"agentic": 0.9, "knowledge": 0.5}),
+            "general": entry(categories={"agentic": 0.6, "knowledge": 0.8}),
+        }
+        c = choose(afeats(), models, set(), escalate_at=4)
+        assert c.target == "agent"
+        assert c.rule == "table:agentic"
+        assert ("agent", 0.9) in c.candidates
+
+    def test_no_agentic_scores_falls_to_generalist(self):
+        models = {"m": entry(categories={"knowledge": 0.8})}
+        c = choose(afeats(), models, set(), escalate_at=4, default_target="gen")
+        assert c.target == "gen"
+        assert c.rule == "table:generalist"
+
+
 class TestEnableRoutingGate:
     """Per-model enable_routing gate on the ranked candidate pool."""
 

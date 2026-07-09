@@ -784,6 +784,7 @@
   "suitability.axis.knowledge": "Knowledge",
   "suitability.axis.reasoning": "Reasoning",
   "suitability.axis.safety": "Safety",
+  "suitability.axis.agentic": "Agentic",
   "chat.title": "Chat - oMLX Admin",
   "chat.brand": "oMLX Chat",
   "chat.api_key_prompt": "Enter your API key to start chatting",

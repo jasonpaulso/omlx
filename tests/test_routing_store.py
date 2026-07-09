@@ -6,7 +6,12 @@ All tmp_path-based; no models or real inference needed.
 
 import json
 
-from omlx.routing.store import CATEGORY_AXES, SuitabilityStore, classify_role
+from omlx.routing.store import (
+    CATEGORY_AXES,
+    DISPATCH_AXES,
+    SuitabilityStore,
+    classify_role,
+)
 
 
 def make_store(tmp_path, name: str = "suitability.json") -> SuitabilityStore:
@@ -59,6 +64,14 @@ def test_category_axes_mapping():
         assert CATEGORY_AXES[bench] == "reasoning"
     assert CATEGORY_AXES["bbq"] == "safety"
     assert CATEGORY_AXES["safetybench"] == "safety"
+
+
+def test_toolcall_maps_to_agentic_axis():
+    assert CATEGORY_AXES["toolcall"] == "agentic"
+
+
+def test_dispatch_axes_include_agentic():
+    assert DISPATCH_AXES == ("agentic", "code", "knowledge", "math")
 
 
 # --- persistence roundtrip ----------------------------------------------
