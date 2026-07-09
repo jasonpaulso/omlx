@@ -5976,7 +5976,13 @@ async def start_suitability_sweep(
 
 @router.get("/api/suitability/table")
 async def get_suitability_table(is_admin: bool = Depends(require_admin)):
-    """Return the persistent suitability table plus per-axis rankings."""
+    """Return the persistent suitability table plus per-axis rankings.
+
+    Surfaced models are filtered to the engine pool's current roster (the
+    same discovery view the Models page uses), so weights deleted from
+    disk drop out of the table and rankings. The store itself keeps every
+    record — a re-downloaded model reappears with its scores intact.
+    """
     from ..routing.store import DISPATCH_AXES
     from .suitability import get_store
 
@@ -5984,10 +5990,19 @@ async def get_suitability_table(is_admin: bool = Depends(require_admin)):
     if store is None:
         raise HTTPException(status_code=503, detail="Suitability store not initialized")
 
+    models = store.all_models()
+    engine_pool = _get_engine_pool() if _get_engine_pool else None
+    if engine_pool is not None:
+        on_disk = set(engine_pool.get_model_ids())
+        models = {mid: entry for mid, entry in models.items() if mid in on_disk}
+
     axes = sorted(DISPATCH_AXES)
     return {
-        "models": store.all_models(),
-        "rankings": {axis: store.ranked(axis) for axis in axes},
+        "models": models,
+        "rankings": {
+            axis: [(mid, score) for mid, score in store.ranked(axis) if mid in models]
+            for axis in axes
+        },
     }
 
 

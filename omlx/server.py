@@ -424,7 +424,18 @@ async def lifespan(app: FastAPI):
             from .admin.suitability import get_store
 
             store = get_store()
-            return store.all_models() if store is not None else {}
+            if store is None:
+                return {}
+            models = store.all_models()
+            # Only models still on disk are dispatch candidates: a scored
+            # model whose weights were deleted would win the axis and then
+            # fail at load. The store record itself is kept, so scores
+            # survive a re-download.
+            pool = _server_state.engine_pool
+            if pool is None:
+                return models
+            on_disk = set(pool.get_model_ids())
+            return {mid: entry for mid, entry in models.items() if mid in on_disk}
 
         def _resident_model_ids() -> set:
             pool = _server_state.engine_pool
