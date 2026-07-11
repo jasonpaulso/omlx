@@ -13,9 +13,15 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field, fields
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import BaseModel, field_validator, model_validator
+
+from .external_api import (
+    ExternalAPIClient,
+    ExternalChatAdapter,
+    ExternalEndpointConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,11 @@ VALID_BENCHMARKS = [
     "toolcall",
 ]
 
+# Sampling profile for an accuracy run. "deterministic" (default) runs greedy
+# (temperature 0) so saved scores stay reproducible; "model_settings" opts in to
+# the model's configured sampling (temperature, top_p, …) for a real-world score.
+SamplingProfile = Literal["deterministic", "model_settings"]
+
 
 class AccuracyBenchmarkRequest(BaseModel):
     """Request model for starting an accuracy benchmark."""
@@ -90,6 +101,19 @@ class AccuracyBenchmarkRequest(BaseModel):
     # exclusive with baseline_mode. variant_label names the delta.
     settings_override: dict[str, Any] | None = None
     variant_label: str | None = None
+    sampling_profile: SamplingProfile = "deterministic"
+    # When set, the benchmark runs against a remote OpenAI-compatible
+    # endpoint instead of a local engine and model_id is the remote
+    # model name (not validated against the local catalog).
+    external: Optional[ExternalEndpointConfig] = None
+
+    @model_validator(mode="after")
+    def _force_thinking_off_for_external(self) -> "AccuracyBenchmarkRequest":
+        # enable_thinking is a local chat-template kwarg; external requests
+        # never send it, so keep the stored flag honest.
+        if self.external is not None:
+            self.enable_thinking = False
+        return self
 
     @field_validator("batch_size")
     @classmethod
@@ -271,7 +295,11 @@ def get_queue_status() -> dict:
         # the result card alone tells the story.
         "phase": phase,
         "queue": [
-            {"model_id": r.model_id, "benchmarks": list(r.benchmarks.keys())}
+            {
+                "model_id": r.model_id,
+                "benchmarks": list(r.benchmarks.keys()),
+                "external": r.external is not None,
+            }
             for r in _queue
         ],
     }
@@ -433,93 +461,67 @@ async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) ->
 
     request = run.request
 
-    # Suppress TTL auto-unload during benchmark
-    engine_pool._suppress_ttl = True
+    # Suppress TTL auto-unload during benchmark (local engines only)
+    if request.external is None:
+        engine_pool._suppress_ttl = True
     start_time = time.time()
+    load_s = 0.0
+    client: Optional[ExternalAPIClient] = None
 
     try:
-        # Phase 1: Unload all models
         run.phase = "loading"
-        loaded_ids = engine_pool.get_loaded_model_ids()
-        if loaded_ids:
-            await _send_event(
-                run,
-                {
-                    "type": "progress",
-                    "phase": "unload",
-                    "model_id": request.model_id,
-                    "benchmark": "",
-                    "message": f"Unloading {len(loaded_ids)} model(s)...",
-                    "current": 0,
-                    "total": len(request.benchmarks),
-                },
+        if request.external is not None:
+            await _send_event(run, {
+                "type": "progress", "phase": "connect", "model_id": request.model_id,
+                "benchmark": "", "message": f"Connecting to {request.external.base_url}...",
+                "current": 0, "total": len(request.benchmarks),
+            })
+            client = ExternalAPIClient(request.external)
+            engine = ExternalChatAdapter(client, request.sampling_profile)
+            await engine.preflight()
+            sampling_kwargs = {}
+        else:
+            loaded_ids = engine_pool.get_loaded_model_ids()
+            if loaded_ids:
+                await _send_event(run, {
+                    "type": "progress", "phase": "unload", "model_id": request.model_id,
+                    "benchmark": "", "message": f"Unloading {len(loaded_ids)} model(s)...",
+                    "current": 0, "total": len(request.benchmarks),
+                })
+                for model_id in loaded_ids:
+                    try:
+                        await engine_pool._unload_engine(model_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to unload {model_id}: {e}")
+
+            await _send_event(run, {
+                "type": "progress", "phase": "load", "model_id": request.model_id,
+                "benchmark": "", "message": f"Loading {request.model_id}...",
+                "current": 0, "total": len(request.benchmarks),
+            })
+            if request.baseline_mode and engine_pool._settings_manager is not None:
+                engine_pool._settings_manager.set_baseline_ids({request.model_id})
+            if request.settings_override and engine_pool._settings_manager is not None:
+                from ..model_settings import ModelSettings
+                engine_pool._settings_manager.set_override_settings(
+                    {request.model_id: ModelSettings.from_dict(request.settings_override)}
+                )
+
+            load_start = time.perf_counter()
+            engine = await engine_pool.get_engine(
+                request.model_id, force_lm=True, stamp_activity=False
             )
-            for model_id in loaded_ids:
-                try:
-                    await engine_pool._unload_engine(model_id)
-                except Exception as e:
-                    logger.warning(f"Failed to unload {model_id}: {e}")
-
-        # Phase 2: Load target model
-        await _send_event(
-            run,
-            {
-                "type": "progress",
-                "phase": "load",
-                "model_id": request.model_id,
-                "benchmark": "",
-                "message": f"Loading {request.model_id}...",
-                "current": 0,
-                "total": len(request.benchmarks),
-            },
-        )
-
-        # Baseline mode: force the target model to load and sample with
-        # completely stock settings (no custom sampling, no draft/MTP/KV
-        # variants). Registered before load so engine_pool sees stock
-        # settings at engine-construction time; cleared in the finally
-        # block below regardless of how the run ends.
-        if request.baseline_mode and engine_pool._settings_manager is not None:
-            engine_pool._settings_manager.set_baseline_ids({request.model_id})
-
-        # Variant mode (M4.3): load with stock defaults plus one flipped
-        # load-time knob. Same transient, non-persisted mechanism as baseline
-        # (from_dict yields stock + the override); cleared in finally.
-        if request.settings_override and engine_pool._settings_manager is not None:
-            from ..model_settings import ModelSettings
-
-            engine_pool._settings_manager.set_override_settings(
-                {request.model_id: ModelSettings.from_dict(request.settings_override)}
-            )
-
-        # Force LM engine for accuracy benchmarks — text-only tasks
-        # don't need VLM and the VLM adapter can produce empty responses.
-        load_start = time.perf_counter()
-        # stamp_activity=False: a bench load must not look like user traffic
-        # (would reset the idle clock) nor trip the idle-sweep preemptor
-        # (which would abort this very sweep). M4.4.
-        engine = await engine_pool.get_engine(
-            request.model_id, force_lm=True, stamp_activity=False
-        )
-        load_s = time.perf_counter() - load_start
-
-        # Load model sampling settings (skipped in baseline mode — stock
-        # defaults only).
-        sampling_kwargs = {}
-        if not request.baseline_mode and engine_pool._settings_manager is not None:
-            ms = engine_pool._settings_manager.get_settings(request.model_id)
-            if ms.top_p is not None:
-                sampling_kwargs["top_p"] = ms.top_p
-            if ms.top_k is not None:
-                sampling_kwargs["top_k"] = ms.top_k
-            if ms.min_p is not None:
-                sampling_kwargs["min_p"] = ms.min_p
-            if ms.repetition_penalty is not None:
-                sampling_kwargs["repetition_penalty"] = ms.repetition_penalty
-            if ms.presence_penalty is not None:
-                sampling_kwargs["presence_penalty"] = ms.presence_penalty
-            if ms.chat_template_kwargs:
-                sampling_kwargs["chat_template_kwargs"] = ms.chat_template_kwargs
+            load_s = time.perf_counter() - load_start
+            sampling_kwargs = {}
+            if engine_pool._settings_manager is not None:
+                ms = engine_pool._settings_manager.get_settings(request.model_id)
+                if ms.chat_template_kwargs:
+                    sampling_kwargs["chat_template_kwargs"] = ms.chat_template_kwargs
+                if not request.baseline_mode and request.sampling_profile == "model_settings":
+                    for name in ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty"):
+                        value = getattr(ms, name, None)
+                        if value is not None:
+                            sampling_kwargs[name] = value
 
         # Phase 3: Run each benchmark
         run.phase = "evaluating"
@@ -635,6 +637,7 @@ async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) ->
             # Build result
             result_data = {
                 "model_id": request.model_id,
+                "external": request.external is not None,
                 "benchmark": result.benchmark_name,
                 "accuracy": round(result.accuracy, 4),
                 "thinking_used": result.thinking_used,
@@ -689,10 +692,11 @@ async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) ->
         # (the result card has already appeared on screen — telling the
         # user "still running" while we clean up reads as a bug).
         run.phase = "unloading"
-        try:
-            await engine_pool._unload_engine(request.model_id)
-        except Exception:
-            pass
+        if request.external is None:
+            try:
+                await engine_pool._unload_engine(request.model_id)
+            except Exception:
+                pass
 
         # Phase 5: Done
         total_time = time.time() - start_time
@@ -749,3 +753,5 @@ async def run_accuracy_benchmark(run: AccuracyBenchmarkRun, engine_pool: Any) ->
                 engine_pool._settings_manager.clear_baseline_ids()
             if request.settings_override:
                 engine_pool._settings_manager.clear_override_settings()
+        if client is not None:
+            await client.aclose()

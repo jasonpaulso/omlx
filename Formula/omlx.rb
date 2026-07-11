@@ -1,14 +1,14 @@
 class Omlx < Formula
   desc "LLM inference server optimized for Apple Silicon"
   homepage "https://github.com/jundot/omlx"
-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.4.4.tar.gz"
-  sha256 "ff06063b215cd9f9ea6d311069f13f0523164cbb9eb2d05e29ef5b48d4dcbf48"
+  url "https://github.com/jundot/omlx/archive/refs/tags/v0.5.0.tar.gz"
+  sha256 "644422d3ac79cc82f170eb942b18469528ea15f7433fb155bf6393da51ff06cb"
   license "Apache-2.0"
 
   head "https://github.com/jundot/omlx.git", branch: "main"
 
   option "with-custom-kernel",
-         "Build native custom kernels for GLM-5.2 and MiniMax M3 acceleration"
+         "Build native custom kernels for GLM-5.2, MiniMax M3 and Qwen3.5/3.6 acceleration"
   option "with-grammar", "Install xgrammar for structured output (requires torch, ~2GB)"
 
   depends_on "rust" => :build
@@ -85,6 +85,7 @@ class Omlx < Formula
       kernel_sources = [
         buildpath/"omlx/custom_kernels/glm_moe_dsa/csrc",
         buildpath/"omlx/custom_kernels/minimax_m3/csrc",
+        buildpath/"omlx/custom_kernels/qwen35_prefill/csrc",
       ]
       unless kernel_sources.all?(&:directory?)
         odie "--with-custom-kernel requires oMLX custom kernel sources; use --HEAD or a release that includes them"
@@ -108,8 +109,10 @@ class Omlx < Formula
         system libexec/"bin/python", "-c", <<~PYTHON
           from omlx.custom_kernels.glm_moe_dsa import fast as glm_fast
           from omlx.custom_kernels.minimax_m3 import fast as minimax_fast
+          from omlx.custom_kernels.qwen35_prefill import fast as qwen35_fast
           assert glm_fast.is_native_available(), glm_fast.import_error()
           assert minimax_fast.is_native_available(), minimax_fast.import_error()
+          assert qwen35_fast.is_native_available(), qwen35_fast.import_error()
         PYTHON
       end
     end

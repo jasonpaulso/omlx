@@ -182,9 +182,10 @@ def _sync_and_clear_cache(stream=None):
     """
     with _mx_buffer_access_lock:
         # The engine stream may not have in-flight work on the current thread
-        # (e.g. external prefill submits to the default stream). On some MLX
-        # builds mx.synchronize raises "There is no Stream(gpu, 0) in current
-        # thread" in that case; swallow it since there is nothing to drain.
+        # (for example, during teardown before that thread submits work). On
+        # some MLX builds mx.synchronize raises "There is no Stream(gpu, 0) in
+        # current thread" in that case; swallow it since there is nothing to
+        # drain.
         target = stream if stream is not None else _default_generation_stream
         try:
             mx.synchronize(target)
@@ -1653,6 +1654,7 @@ class Scheduler:
 
         # SpecPrefill: draft model for attention-based sparse prefill
         self._specprefill_draft_model: Any | None = None
+        self._draft_paged_ssd_cache_manager: Any | None = None
         # Track active specprefill request for RoPE cleanup
         self._specprefill_active_request_id: str | None = None
 
@@ -3077,8 +3079,18 @@ class Scheduler:
                     )
 
             _throttle_pre = get_phys_footprint()
-            self.model(input_arr[:, :n_to_process], cache=prompt_cache, **model_kwargs)
-            mx.eval([c.state for c in prompt_cache])
+            # External prefill bypasses BatchGenerator, so it must establish
+            # the per-engine stream context itself. Native lazy primitives
+            # otherwise bind to the worker's unrelated default stream and can
+            # fail at mx.eval with "There is no Stream(gpu, X) in current
+            # thread" (issue #2170).
+            with mx.stream(self._stream):
+                self.model(
+                    input_arr[:, :n_to_process],
+                    cache=prompt_cache,
+                    **model_kwargs,
+                )
+                mx.eval([c.state for c in prompt_cache])
             _throttle_post = get_phys_footprint()
             self._record_chunk_transient(
                 n_to_process,
@@ -4046,8 +4058,11 @@ class Scheduler:
         chunk = state.tokens_remaining[:, :n]
         state.tokens_remaining = state.tokens_remaining[:, n:]
         _throttle_pre = get_phys_footprint()
-        self.model(chunk, cache=state.cache)
-        mx.eval([c.state for c in state.cache])
+        # Chunked prefill also bypasses BatchGenerator and must establish the
+        # same per-engine stream context as the regular external prefill path.
+        with mx.stream(self._stream):
+            self.model(chunk, cache=state.cache)
+            mx.eval([c.state for c in state.cache])
         _throttle_post = get_phys_footprint()
         self._record_chunk_transient(
             n,
@@ -6389,12 +6404,21 @@ class Scheduler:
     ) -> None:
         """Set the draft model for SpecPrefill scoring.
 
-        Creates a separate BlockAwarePrefixCache for the draft model
-        using the existing paged SSD cache infrastructure. The model_name
-        in compute_block_hash() naturally isolates draft blocks from target.
+        Creates separate block and SSD cache managers for the draft model so
+        target TurboQuant signatures cannot invalidate draft cache blocks.
         """
+        if not self._close_specprefill_draft_cache_manager():
+            raise RuntimeError(
+                "Could not close the previous SpecPrefill draft SSD cache manager"
+            )
         self._specprefill_draft_model = draft_model
         self._draft_prefix_cache: Any | None = None
+        if not draft_model_name:
+            logger.info(
+                "SpecPrefill: draft model set without a stable model name "
+                "(no SSD cache)"
+            )
+            return
 
         if (
             self.paged_cache_manager is not None
@@ -6404,16 +6428,48 @@ class Scheduler:
                 from .cache.paged_cache import PagedCacheManager
                 from .cache.prefix_cache import BlockAwarePrefixCache
 
-                name = draft_model_name or "specprefill-draft"
+                name = draft_model_name
+                draft_cache_list = make_prompt_cache(draft_model)
+                draft_layer_cache_types = None
+                if HAS_CACHE_TYPE_HANDLERS and ModelCacheConfig is not None:
+                    try:
+                        draft_model_cache_config = ModelCacheConfig.from_cache_list(
+                            draft_cache_list,
+                            model_name=name,
+                        )
+                        draft_layer_cache_types = draft_model_cache_config.get_type_names()
+                    except Exception as e:
+                        logger.debug(
+                            "Could not infer SpecPrefill draft cache layout: %s", e
+                        )
                 draft_paged = PagedCacheManager(
                     block_size=self.config.paged_cache_block_size,
                     max_blocks=self.paged_cache_manager.max_blocks,
                     model_name=name,
                 )
+                draft_ssd = PagedSSDCacheManager(
+                    cache_dir=Path(self.config.paged_ssd_cache_dir),
+                    max_size_bytes=self.config.paged_ssd_cache_max_size,
+                    hot_cache_max_bytes=self.config.hot_cache_max_size,
+                    hot_cache_only=self.config.hot_cache_only,
+                    hot_cache_budget=self.config.hot_cache_budget,
+                    expected_model_name=name,
+                    expected_num_layers=len(draft_cache_list),
+                    expected_block_size=self.config.paged_cache_block_size,
+                    expected_block_size_tokens=self.config.paged_cache_block_size,
+                    expected_kv_bytes_per_token=getattr(
+                        self.paged_ssd_cache_manager,
+                        "_expected_kv_bytes_per_token",
+                        200_000,
+                    ),
+                    expected_layer_cache_types=draft_layer_cache_types,
+                )
+                self._draft_paged_ssd_cache_manager = draft_ssd
+                draft_paged.set_paged_ssd_cache_manager(draft_ssd)
                 self._draft_prefix_cache = BlockAwarePrefixCache(
                     model=draft_model,
                     paged_cache_manager=draft_paged,
-                    paged_ssd_cache_manager=self.paged_ssd_cache_manager,
+                    paged_ssd_cache_manager=draft_ssd,
                 )
                 self._draft_prefix_cache.set_cold_restore_callback(
                     self._restore_block_from_cold
@@ -6422,10 +6478,31 @@ class Scheduler:
                     f"SpecPrefill: draft model set with SSD cache (model_name={name})"
                 )
             except Exception as e:
+                self._draft_prefix_cache = None
+                self._close_specprefill_draft_cache_manager()
                 logger.warning(f"SpecPrefill: draft SSD cache setup failed: {e}")
                 logger.info("SpecPrefill: draft model set (no SSD cache)")
         else:
             logger.info("SpecPrefill: draft model set (no SSD cache)")
+
+    def _close_specprefill_draft_cache_manager(self) -> bool:
+        manager = self._draft_paged_ssd_cache_manager
+        if manager is None:
+            return True
+        try:
+            manager.close()
+        except Exception as e:
+            logger.warning("SpecPrefill draft SSD cache shutdown error: %s", e)
+            return False
+        writer_thread = getattr(manager, "_writer_thread", None)
+        if writer_thread is not None and writer_thread.is_alive():
+            logger.warning(
+                "SpecPrefill draft SSD cache writer remains active after shutdown"
+            )
+            return False
+
+        self._draft_paged_ssd_cache_manager = None
+        return True
 
     def set_vlm_mtp_drafter(
         self,
@@ -6842,13 +6919,16 @@ class Scheduler:
             )
 
             t0 = time.monotonic()
-            importance, used_cache = score_tokens(
-                self._specprefill_draft_model,
-                tokens_to_score,
-                prefill_step_size=self.config.prefill_step_size,
-                existing_cache=draft_cache,
-                progress_callback=_score_progress,
-            )
+            # Draft scoring bypasses BatchGenerator, so keep its lazy model
+            # work and evals on this engine's worker-local stream.
+            with mx.stream(self._stream):
+                importance, used_cache = score_tokens(
+                    self._specprefill_draft_model,
+                    tokens_to_score,
+                    prefill_step_size=self.config.prefill_step_size,
+                    existing_cache=draft_cache,
+                    progress_callback=_score_progress,
+                )
             selected = select_chunks(importance, keep_pct=keep_pct)
             t_score = time.monotonic() - t0
 
@@ -7415,6 +7495,20 @@ class Scheduler:
             _sync_and_clear_cache(self._stream)
         except Exception as e:
             logger.warning(f"Metal cache clear failed during error recovery: {e}")
+        # Requests failed mid-prefill leave PrefillProgressTracker entries
+        # behind (auto-removal only fires at processed >= total). The local
+        # RuntimeError handlers in the prefill paths cover the common memory
+        # errors (#1405), but any other exception type bubbles up here and
+        # would leak a phantom "PP" row on the dashboard.
+        tracker = get_prefill_tracker()
+        for rid in failed_ids:
+            tracker.remove(rid)
+        # Republish the admin snapshot now that the queues are empty. The
+        # snapshot is normally published at the end of a successful step();
+        # when step() raises, the last published snapshot still lists the
+        # failed requests, so the dashboard and the macOS app keep showing
+        # them as "generating" until the next successful step (#2126).
+        self._publish_admin_snapshot()
         return failed_ids
 
     def get_num_waiting(self) -> int:
@@ -8168,8 +8262,9 @@ class Scheduler:
                                 detail="system prompt prefill",
                                 extra=spec_sparse_extra,
                             )
-                            self.model(sys_arr[:step][None], cache=sp_cache)
-                            mx.eval([c.state for c in sp_cache])
+                            with mx.stream(self._stream):
+                                self.model(sys_arr[:step][None], cache=sp_cache)
+                                mx.eval([c.state for c in sp_cache])
                             sys_processed += step
                             _check_specprefill_abort(sys_processed)
                             tracker.update(
@@ -8202,8 +8297,9 @@ class Scheduler:
                                 detail="system prompt prefill",
                                 extra=spec_sparse_extra,
                             )
-                            self.model(sys_arr[None], cache=sp_cache)
-                            mx.eval([c.state for c in sp_cache])
+                            with mx.stream(self._stream):
+                                self.model(sys_arr[None], cache=sp_cache)
+                                mx.eval([c.state for c in sp_cache])
                             sys_processed += final_sys
                             _check_specprefill_abort(sys_processed)
                             tracker.update(
@@ -8258,15 +8354,17 @@ class Scheduler:
                             },
                         )
 
-                    sparse_prefill(
-                        self.model,
-                        conv_tokens,
-                        selected,
-                        sp_cache,
-                        step_size=self.config.prefill_step_size,
-                        position_offset=pos_offset,
-                        progress_callback=_sparse_progress,
-                    )
+                    # Sparse target prefill also runs its own model/eval loop.
+                    with mx.stream(self._stream):
+                        sparse_prefill(
+                            self.model,
+                            conv_tokens,
+                            selected,
+                            sp_cache,
+                            step_size=self.config.prefill_step_size,
+                            position_offset=pos_offset,
+                            progress_callback=_sparse_progress,
+                        )
                     # sparse_prefill installs _OffsetAdjustedRoPE with
                     # adjustment = conv_len - selected_len'. Subtract 1 to account for the
                     # extra token BatchGenerator will process.
@@ -8352,12 +8450,16 @@ class Scheduler:
                         self._cleanup_prefill_abort_request(request)
                         continue
                     except _PrefillEvictionNeeded as e:
-                        self._release_paged_cache_for_request(request.request_id)
-                        self._pause_for_prefill_eviction(
-                            request,
-                            e.request,
-                            reset_chunked_state=True,
-                        )
+                        # Raised by the adaptive throttle before the first
+                        # chunk's forward pass, so a reconstructed prefix
+                        # (prompt_cache / block_table / cached_tokens) is
+                        # still valid. Keep it attached across the pause:
+                        # if no idle model gets evicted, the retry prefills
+                        # only the uncached suffix under the adaptive
+                        # throttle instead of recomputing the whole prompt
+                        # cold (#2180). Mirrors the in-flight pause in
+                        # _advance_chunked_prefills, which also keeps state.
+                        self._pause_for_prefill_eviction(request, e.request)
                         break
                     except PrefillMemoryExceededError as e:
                         logger.error(
@@ -9600,25 +9702,18 @@ class Scheduler:
         self,
         request: "Request",
         eviction: PrefillEvictionRequest,
-        *,
-        reset_chunked_state: bool = False,
     ) -> None:
-        """Hold a request until EngineCore can evict idle models asynchronously."""
+        """Hold a request until EngineCore can evict idle models asynchronously.
+
+        The request's prefix-cache state (prompt_cache, block_table,
+        cached_tokens, remaining_tokens) is deliberately left untouched so
+        a reconstructed prefix survives the pause and the retry prefills
+        only the uncached suffix instead of recomputing the prompt cold
+        (#2180).
+        """
         self._pending_prefill_eviction_request = eviction
         request.status = RequestStatus.WAITING
         request.batch_uid = None
-        if reset_chunked_state:
-            self._prefill_states.pop(request.request_id, None)
-            try:
-                self.prefilling.remove(request)
-            except ValueError:
-                pass
-            request.prompt_cache = None
-            request.cached_tokens = 0
-            request.remaining_tokens = request.prompt_token_ids
-            request.block_table = None
-            request.shared_prefix_blocks = 0
-            get_prefill_tracker().remove(request.request_id)
         self.waiting.appendleft(request)
         logger.info(
             "Paused request %s for prefill LRU eviction (reason=%s)",
@@ -10002,7 +10097,10 @@ class Scheduler:
                 self._boundary_snapshot_store.shutdown()
             except Exception as e:
                 logger.warning("Boundary snapshot store shutdown error: %s", e)
+        self._close_specprefill_draft_cache_manager()
         self.paged_cache_manager = None
+        self._draft_prefix_cache = None
+        self._specprefill_draft_model = None
         self.block_aware_cache = None
         self.memory_monitor = None
         self._boundary_snapshot_store = None
@@ -10070,6 +10168,9 @@ class Scheduler:
             except Exception as e:
                 logger.warning("Boundary snapshot store shutdown error: %s", e)
             self._boundary_snapshot_store = None
+        self._close_specprefill_draft_cache_manager()
+        self._draft_prefix_cache = None
+        self._specprefill_draft_model = None
         if self.paged_ssd_cache_manager is not None:
             self.paged_ssd_cache_manager.close()
             self.paged_ssd_cache_manager = None
@@ -10282,17 +10383,27 @@ class Scheduler:
         except Exception as e:
             logger.debug(f"Failed to extract model info: {e}")
 
-    def _infer_live_layer_cache_types(self) -> list[str] | None:
-        """Infer the layer-cache signature that future SSD saves will use."""
+    def _infer_live_layer_cache_types(
+        self,
+    ) -> tuple[list[str], float | None] | None:
+        """Infer the layer-cache signature that future SSD saves will use.
+
+        Returns ``(layer_cache_types, turboquant_kv_bits)`` — the predicted
+        per-layer type names plus the depth requests will quantize at (None
+        when TurboQuant is inactive or ineligible) — or None when no
+        signature can be inferred.
+        """
         if not HAS_CACHE_TYPE_HANDLERS or ModelCacheConfig is None:
             return None
 
-        make_cache = getattr(self.model, "make_cache", None)
-        if not callable(make_cache):
-            return None
-
+        # Build the cache list the same way the request path does
+        # (make_prompt_cache defers to model.make_cache when the model
+        # defines one, and falls back to plain per-layer KVCache otherwise).
+        # Requiring model.make_cache here made the refresh a silent no-op
+        # for every plain dense model, so the manager never learned the
+        # TurboQuant layout or bit depth (#2045).
         try:
-            cache_list = make_cache()
+            cache_list = make_prompt_cache(self.model)
         except Exception as e:
             logger.debug("Failed to build cache list for SSD signature: %s", e)
             return None
@@ -10315,14 +10426,18 @@ class Scheduler:
             return None
 
         if self._turboquant_kv_bits is None:
-            return layer_cache_types
+            return layer_cache_types, None
 
         try:
-            if not self._turboquant_eligible(cache_list):
-                return layer_cache_types
+            eligible = self._turboquant_eligible(cache_list)
         except Exception as e:
+            # Fail safe: committing an un-rewritten (plain-KV) layout here
+            # would make the stale-signature sweep evict every valid
+            # TurboQuant block, so refuse to infer rather than guess.
             logger.debug("Failed to evaluate TurboQuant SSD signature: %s", e)
-            return layer_cache_types
+            return None
+        if not eligible:
+            return layer_cache_types, None
 
         kv_indices = [
             i for i, c in enumerate(cache_list) if _is_turboquant_kv_family_cache(c)
@@ -10333,7 +10448,12 @@ class Scheduler:
             if idx != last_kv_idx and idx < len(layer_cache_types):
                 layer_cache_types[idx] = "TurboQuantKVCache"
 
-        return layer_cache_types
+        # The depth is keyed off the same eligibility gate the request path
+        # uses, not the rewritten names: models whose convertible caches sit
+        # inside CacheList layers report bare "CacheList" names at every
+        # depth, so the bits field is the only signature discriminator for
+        # them (#2045).
+        return layer_cache_types, float(self._turboquant_kv_bits)
 
     def refresh_ssd_layer_signature(self) -> list[str] | None:
         """Set the SSD manager's live layer signature before prefix lookup."""
@@ -10341,14 +10461,24 @@ class Scheduler:
         if manager is None:
             return None
 
-        layer_cache_types = self._infer_live_layer_cache_types()
-        if not layer_cache_types:
+        inferred = self._infer_live_layer_cache_types()
+        if inferred is None:
+            if self._turboquant_kv_bits is not None:
+                logger.warning(
+                    "Could not infer the SSD cache layer signature; "
+                    "TurboQuant bit-depth compatibility checks stay disabled "
+                    "for this session (stale-depth blocks are not swept)."
+                )
             return None
+        layer_cache_types, turboquant_kv_bits = inferred
 
         try:
             set_signature = getattr(manager, "set_expected_layer_signature", None)
             if callable(set_signature):
-                set_signature(layer_cache_types)
+                set_signature(
+                    layer_cache_types,
+                    turboquant_kv_bits=turboquant_kv_bits,
+                )
             else:
                 manager.adopt_layer_signature_if_unset(layer_cache_types)
             manager.invalidate_stale_layer_signature()
