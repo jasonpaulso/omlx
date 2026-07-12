@@ -92,23 +92,54 @@ def _last_user_content(messages: list) -> str:
     return ""
 
 
-def _has_non_text_parts(messages: list) -> bool:
-    """True if any message carries a non-text content part (image_url etc.).
+# Part-type classification for the shape rule. Anthropic-protocol agent
+# traffic represents tool calls, tool outputs, and reasoning as content
+# blocks; production evidence 2026-07-11 showed that treating every
+# non-text part as vision routed 95% of a real Claude Code session to the
+# vision target and bypassed the classifier entirely. Text-flow parts are
+# textual control-flow, not media. Unknown part types fail open to the
+# classifier rather than forcing a modality target.
+_TEXT_FLOW_PART_TYPES = frozenset(
+    {"text", "tool_use", "tool_result", "thinking", "redacted_thinking"}
+)
+# OpenAI: image_url, file. Anthropic: image, document (PDF needs a VLM).
+_VISION_PART_TYPES = frozenset(
+    {"image", "image_url", "document", "file", "video", "video_url"}
+)
+# OpenAI: input_audio. "audio" reserved for symmetric future shapes.
+_AUDIO_PART_TYPES = frozenset({"input_audio", "audio"})
+
+
+def _detect_modality(messages: list) -> str | None:
+    """Return "vision"/"audio" if the conversation carries media parts.
 
     Scans the whole conversation, not just the last turn: an image three
-    turns back still requires a vision-capable target. File parts are
-    normally flattened to text by MarkItDown preprocessing before routing
-    sees the request, so in practice this triggers on image/audio/video
-    part types.
+    turns back still requires a vision-capable target. Recurses into
+    tool_result nested content — a screenshot returned by a browser tool
+    is a real vision need even though the enclosing block is text-flow.
+    File/document parts are normally flattened to text by MarkItDown
+    preprocessing before routing sees the request; if one survives to
+    here it still needs a vision-capable target. Vision wins when both
+    modalities appear.
     """
+    saw_audio = False
     for msg in messages:
         content = _msg_field(msg, "content")
         if not isinstance(content, list):
             continue
-        for part in content:
-            if _msg_field(part, "type") not in (None, "text"):
-                return True
-    return False
+        stack = list(content)
+        while stack:
+            part = stack.pop()
+            part_type = _msg_field(part, "type")
+            if part_type in _VISION_PART_TYPES:
+                return "vision"
+            if part_type in _AUDIO_PART_TYPES:
+                saw_audio = True
+            elif part_type == "tool_result":
+                nested = _msg_field(part, "content")
+                if isinstance(nested, list):
+                    stack.extend(nested)
+    return "audio" if saw_audio else None
 
 
 class RoutingService:
@@ -175,14 +206,15 @@ class RoutingService:
 
         # Shape rule precedes everything (decision #11: semantic routing
         # layers BEHIND shape-based rules). A request carrying image/audio
-        # parts must reach a vision-capable target — text-only targets
+        # parts must reach a modality-capable target — text-only targets
         # cannot see the content regardless of tools or complexity.
-        if _has_non_text_parts(messages):
-            vision_target = self.settings.targets.get("vision")
-            if vision_target:
+        modality = _detect_modality(messages)
+        if modality is not None:
+            modality_target = self.settings.targets.get(modality)
+            if modality_target:
                 decision = RouteDecision(
-                    target=vision_target,
-                    rule_fired="shape:vision",
+                    target=modality_target,
+                    rule_fired=f"shape:{modality}",
                     override=None,
                     features=None,
                     raw_analysis=None,
@@ -191,8 +223,10 @@ class RoutingService:
                 self._record_decision(decision, request_id, endpoint, stream)
                 return decision
             logger.warning(
-                "Routing: request has non-text parts but no targets.vision "
-                "configured; text-only dispatch will not see them"
+                "Routing: request has %s parts but no targets.%s "
+                "configured; text-only dispatch will not see them",
+                modality,
+                modality,
             )
 
         override: str | None = None

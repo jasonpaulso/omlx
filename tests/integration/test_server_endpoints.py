@@ -1510,7 +1510,7 @@ class TestAnthropicMessagesRouting:
     ):
         """Anthropic image blocks (type="image") are non-text parts, so the
         shape rule routes to targets.vision before classification runs --
-        confirms _has_non_text_parts already handles Anthropic's shape."""
+        confirms _detect_modality handles Anthropic's shape."""
         from omlx.server import _server_state
 
         service = self._make_routing_service(

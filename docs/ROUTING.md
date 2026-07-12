@@ -27,7 +27,7 @@ All planned milestones plus the first M4 item are implemented and live-verified:
 - **M1 — binary routing.** `auto` → small/big target via classify + policy. Native, in-process.
 - **M2 — suitability harness.** Server benchmarks its own roster in a baseline (stock-settings) mode, persists a per-model capability table with provenance, surfaced in an admin page.
 - **M3 — N-way dispatch.** Table-driven per-axis routing (code/math/knowledge), thinking-lane exclusion, escalation tier, residency-aware tiebreak. Opt-in; binary is the fallback.
-- **M4.1 — shape-based vision pre-route.** Requests carrying image/non-text parts route to a vision target before the text classifier runs.
+- **M4.1 — shape-based modality pre-route.** Requests carrying image parts route to a vision target (audio parts to an audio target) before the text classifier runs. Part types are classified explicitly: `tool_use`/`tool_result`/`thinking` blocks are text-flow, not modality signals — the original any-non-text check routed 95% of a real Claude Code session to the vision target (2026-07-11 experiment) before the part-type fix.
 
 Measured on an M-series Mac: classify overhead **~70 ms p50** in-process (an HTTP sidecar prototype was ~2.15 s). With routing disabled the server is byte-for-byte unchanged.
 
@@ -54,7 +54,9 @@ The suitability harness lives under admin (`omlx/admin/suitability.py`) because 
 POST /v1/chat/completions {model: "auto", ...}
   └─ hook in create_chat_completion, AFTER the oQ-quantization 503 guard
        1. model != virtual id?  → passthrough (zero cost)
-       2. non-text parts present? → targets.vision (shape rule, precedes everything)
+       2. image/audio parts present? → targets.vision / targets.audio (shape rule,
+          precedes everything; tool_use/tool_result/thinking are text-flow, and a
+          missing modality target logs a warning and falls through)
        3. tools present / user turns > N? → generalist/big (agentic override)
        4. classify(last user text) via pinned router, greedy, timeout 3s
             any failure → fail_open_target
@@ -91,7 +93,7 @@ Note: the accuracy evaluator already forces `temperature=0`, `presence_penalty=0
 3. **bf16 router weights, never quantized.** (`Supra-Router-51M-oQ8` exists on rosters; do not use it for routing.)
 4. **Parse the full analysis line; policy keys on features, not the router's own `Route:` token** — that baked-in rule is calibrated for edge SLMs and over-escalates for a capable roster. `Route:` is only the fallback when policy config is absent.
 5. **Complexity is primary; math/code are modifiers; domain is telemetry-only.**
-6. **Shape rule → agentic overrides → profiler.** Image/non-text parts route to a vision target before anything else (decision #11's layering); tools/multi-turn route to the generalist; only then does semantic classification run.
+6. **Shape rule → agentic overrides → profiler.** Image/audio parts route to a modality target before anything else (decision #11's layering); tools/multi-turn route to the generalist; only then does semantic classification run. The shape rule keys on explicit part types (image/image_url/document/file → vision, input_audio → audio); agent control-flow blocks (`tool_use`/`tool_result`/`thinking`) and unknown part types fail open to the rest of the chain — treating them as media routed 95% of real agent traffic to the vision model before the 2026-07-12 fix. tool_result *nested* content is scanned too: a screenshot returned by a browser tool still needs a VLM.
 7. **Fail open, always.** Any classify failure (timeout, parse miss, engine gone, store/pool snapshot error) routes to a configured fail-open target. A routing bug must never 5xx a request or strand it on a weak model.
 8. **Opt-in via virtual id; concrete ids bypass.** MarkItDown's virtual-model pattern is the in-repo precedent.
 9. **Decision telemetry from day one, jsonl, first-class.** The labeled dataset is worth more than the router itself.
@@ -114,7 +116,8 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "targets": {
     "small":  "<a fast, cheap chat model>",
     "big":    "<the local frontier / fail-open target>",
-    "vision": "<a VLM; optional — shape rule needs it to route images>"
+    "vision": "<a VLM; optional — shape rule needs it to route images>",
+    "audio":  "<an audio-capable model; optional — shape rule for input_audio parts>"
   },
   "policy": {
     "escalate_complexity_at": 4,          // complexity >= 4 -> big
@@ -229,7 +232,7 @@ pytest -q                                      # full fast suite
 
 - **A running server evicting all models mid-sweep = cancelled runs.** Restarting the server (even to pick up config) while the bench queue is active cancels the in-flight run. Check queue status before restarting. Cancellation is *not* recorded as unhealthy (by design); a real load/serve failure is.
 - **Escalation 507s** mean the big/frontier target can't fit alongside what's pinned/resident. Either free room (unpin) or point `big` at a smaller resident model. Fail-open still routes there, so the 507 comes from the engine, not routing.
-- **A 507'd routed request leaves a telemetry row pending** (decision recorded, no outcome) until shutdown flush. Harmless; an orphan-flush timer is a cheap future polish.
+- **A 507'd routed request leaves a telemetry row pending** (decision recorded, no outcome) until the orphan flush reaps it: `_flush_orphans()` runs on every new decision and flushes rows older than 10 minutes with `outcome: null`.
 - **Tables don't travel between machines.** Copying `suitability.json` across hosts imports wrong timings and possibly wrong fit. Sweep each host.
 - **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect — including everything in the Global Settings *Semantic Routing* panel (it persists immediately but the service is built at boot). The **exception is `enable_routing`**: the per-model gate is read live per request, so toggling it in Model Settings takes effect on the next routed request with no restart.
 - **The gate is silent when unused.** If you enable `table_dispatch` but forget to opt any model in with `enable_routing`, nothing changes — the empty enabled set makes the gate inert (fail-open), *not* a collapse to `default_target`. To see which models a decision skipped for being un-opted-in, read the `disabled` field in `routing_decisions.jsonl`.
