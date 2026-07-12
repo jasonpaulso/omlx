@@ -202,7 +202,14 @@ async def test_telemetry_row_written_with_outcome(tmp_path):
         endpoint="chat",
     )
     service.record_outcome(
-        "req-8", completion_tokens=512, finish_reason="stop", gen_ms=8000.0
+        "req-8",
+        completion_tokens=512,
+        finish_reason="stop",
+        gen_ms=8000.0,
+        ttft_ms=1234.56,
+        decode_ms=6765.44,
+        prompt_tokens=4096,
+        cached_tokens=3072,
     )
     await service.close()
 
@@ -218,7 +225,39 @@ async def test_telemetry_row_written_with_outcome(tmp_path):
         "completion_tokens": 512,
         "finish_reason": "stop",
         "gen_ms": 8000.0,
+        "ttft_ms": 1234.6,
+        "decode_ms": 6765.4,
+        "prompt_tokens": 4096,
+        "cached_tokens": 3072,
     }
+
+
+async def test_outcome_timing_fields_default_to_none(tmp_path):
+    """Non-streaming paths pass no timing/token detail; row keys still present."""
+    settings = make_settings(tmp_path)
+    service = RoutingService(settings)
+    engine = _FakeEngine(BIG_ANALYSIS)
+    service.set_engine_getter(lambda model_id: _get(engine))
+
+    await service.route_chat_request(
+        messages=[{"role": "user", "content": "implement a distributed lock"}],
+        has_tools=False,
+        request_id="req-9",
+        stream=False,
+        endpoint="chat",
+    )
+    service.record_outcome(
+        "req-9", completion_tokens=64, finish_reason="stop", gen_ms=500.0
+    )
+    await service.close()
+
+    rows = read_jsonl(settings.telemetry.path)
+    assert len(rows) == 1
+    outcome = rows[0]["outcome"]
+    assert outcome["ttft_ms"] is None
+    assert outcome["decode_ms"] is None
+    assert outcome["prompt_tokens"] is None
+    assert outcome["cached_tokens"] is None
 
 
 async def test_telemetry_flushes_pending_rows_without_outcome_on_close(tmp_path):

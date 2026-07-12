@@ -331,6 +331,10 @@ class RoutingService:
         completion_tokens: int | None,
         finish_reason: str | None,
         gen_ms: float | None,
+        ttft_ms: float | None = None,
+        decode_ms: float | None = None,
+        prompt_tokens: int | None = None,
+        cached_tokens: int | None = None,
     ) -> None:
         """Attach an outcome to a pending telemetry row and enqueue the write.
 
@@ -345,6 +349,12 @@ class RoutingService:
                 "completion_tokens": completion_tokens,
                 "finish_reason": finish_reason,
                 "gen_ms": gen_ms,
+                # ttft/decode are stream-only (None on non-streaming paths);
+                # cached_tokens distinguishes warm vs cold prefill per request.
+                "ttft_ms": round(ttft_ms, 1) if ttft_ms is not None else None,
+                "decode_ms": round(decode_ms, 1) if decode_ms is not None else None,
+                "prompt_tokens": prompt_tokens,
+                "cached_tokens": cached_tokens,
             }
             self._enqueue(row)
         except Exception as e:  # noqa: BLE001 - must never raise

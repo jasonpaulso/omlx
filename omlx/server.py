@@ -3718,13 +3718,23 @@ async def create_chat_completion(
             if route_decision is not None and routing_service is not None:
 
                 def routing_on_complete(
-                    tokens: int, reason: Optional[str], gen_ms: float
+                    tokens: int,
+                    reason: Optional[str],
+                    gen_ms: float,
+                    ttft_ms: Optional[float] = None,
+                    decode_ms: Optional[float] = None,
+                    prompt_tokens: Optional[int] = None,
+                    cached_tokens: Optional[int] = None,
                 ) -> None:
                     routing_service.record_outcome(
                         routing_request_id,
                         completion_tokens=tokens,
                         finish_reason=reason,
                         gen_ms=gen_ms,
+                        ttft_ms=ttft_ms,
+                        decode_ms=decode_ms,
+                        prompt_tokens=prompt_tokens,
+                        cached_tokens=cached_tokens,
                     )
 
             # Pre-mint the completion id so the keepalive frame (emitted before the
@@ -3847,6 +3857,8 @@ async def create_chat_completion(
                     completion_tokens=output.completion_tokens,
                     finish_reason=finish_reason,
                     gen_ms=elapsed * 1000.0,
+                    prompt_tokens=output.prompt_tokens,
+                    cached_tokens=output.cached_tokens,
                 )
 
             return ChatCompletionResponse(
@@ -4556,7 +4568,7 @@ async def stream_chat_completion(
     model_load_duration: float = 0.0,
     resolved_model: Optional[str] = None,
     response_id: Optional[str] = None,
-    on_complete: Optional[Callable[[int, Optional[str], float], None]] = None,
+    on_complete: Optional[Callable[..., None]] = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -4899,6 +4911,10 @@ async def stream_chat_completion(
                     last_output.completion_tokens,
                     finish_reason,
                     total_duration * 1000.0,
+                    ttft_ms=ttft * 1000.0,
+                    decode_ms=gen_duration * 1000.0,
+                    prompt_tokens=last_output.prompt_tokens,
+                    cached_tokens=last_output.cached_tokens,
                 )
             except Exception as exc:  # routing telemetry must never break a stream
                 logger.debug("Routing on_complete callback failed: %s", exc)
@@ -4955,7 +4971,7 @@ async def stream_anthropic_messages(
     messages: list,
     request: AnthropicMessagesRequest,
     resolved_model: Optional[str] = None,
-    on_complete: Optional[Callable[[int, Optional[str], float], None]] = None,
+    on_complete: Optional[Callable[..., None]] = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """
@@ -5311,6 +5327,10 @@ async def stream_anthropic_messages(
                     last_output.completion_tokens,
                     last_output.finish_reason,
                     total_duration * 1000.0,
+                    ttft_ms=ttft * 1000.0,
+                    decode_ms=gen_duration * 1000.0,
+                    prompt_tokens=last_output.prompt_tokens,
+                    cached_tokens=last_output.cached_tokens,
                 )
             except Exception as exc:  # routing telemetry must never break a stream
                 logger.debug("Routing on_complete callback failed: %s", exc)
@@ -5640,13 +5660,23 @@ async def create_anthropic_message(
             if route_decision is not None and routing_service is not None:
 
                 def routing_on_complete(
-                    tokens: int, reason: Optional[str], gen_ms: float
+                    tokens: int,
+                    reason: Optional[str],
+                    gen_ms: float,
+                    ttft_ms: Optional[float] = None,
+                    decode_ms: Optional[float] = None,
+                    prompt_tokens: Optional[int] = None,
+                    cached_tokens: Optional[int] = None,
                 ) -> None:
                     routing_service.record_outcome(
                         routing_request_id,
                         completion_tokens=tokens,
                         finish_reason=reason,
                         gen_ms=gen_ms,
+                        ttft_ms=ttft_ms,
+                        decode_ms=decode_ms,
+                        prompt_tokens=prompt_tokens,
+                        cached_tokens=cached_tokens,
                     )
 
             sse_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -5751,6 +5781,8 @@ async def create_anthropic_message(
                     completion_tokens=output.completion_tokens,
                     finish_reason=output.finish_reason,
                     gen_ms=elapsed * 1000.0,
+                    prompt_tokens=output.prompt_tokens,
+                    cached_tokens=output.cached_tokens,
                 )
 
             return response.model_dump_json()

@@ -62,6 +62,9 @@ POST /v1/chat/completions {model: "auto", ...}
        6. request.model rewritten in place; downstream resolve/settings/engine re-read it
        7. x-omlx-route header on both stream + non-stream paths
        8. telemetry row appended; outcome attached post-response
+          (gen_ms always; ttft_ms/decode_ms streaming-only; plus
+          prompt_tokens/cached_tokens — cached_tokens is the warm-vs-cold
+          prefill signal for route-flip cost analysis)
 ```
 
 Rewriting `request.model` in place is sufficient — model resolution, per-model settings, and engine acquisition all re-read it downstream. Streaming needs nothing special: the rewrite happens pre-dispatch and every target is local.
