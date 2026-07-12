@@ -1,0 +1,487 @@
+            <div x-show="mainTab === 'router'" x-cloak>
+                <div class="animate-fade-in-up">
+                    <!-- Header -->
+                    <div class="mb-8">
+                        <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">SEMANTIC ROUTER</h2>
+                        <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Router</h3>
+                        <p class="text-sm text-neutral-500 mt-2">Live routing decisions, aggregate stats, and configuration for the semantic router.</p>
+                    </div>
+
+                    <!-- Status + Refresh Controls -->
+                    <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                            <div class="flex items-center gap-3">
+                                <i data-lucide="route" class="w-4 h-4 text-neutral-500"></i>
+                                <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Activity</span>
+                            </div>
+                            <div x-show="routerAutoRefresh" class="flex items-center gap-2 text-sm text-green-600">
+                                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                                Auto-refreshing
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-center gap-3 px-4 sm:px-6 py-4 border-b border-neutral-100">
+                            <template x-if="!routerData.config || !routerData.config.enabled">
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-100 text-neutral-500 border border-neutral-200">
+                                    Routing disabled — enable below and restart
+                                </span>
+                            </template>
+                            <template x-if="routerData.config && routerData.config.enabled">
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+                                      :class="routerData.service_active ? 'bg-green-50 text-green-600 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'">
+                                    <span class="w-1.5 h-1.5 rounded-full" :class="routerData.service_active ? 'bg-green-500' : 'bg-red-500'"></span>
+                                    <span x-text="routerData.service_active ? 'Service active' : 'Service inactive'"></span>
+                                </span>
+                            </template>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-100 text-neutral-700 border border-neutral-200">
+                                <span x-text="routerData.pending_count || 0"></span> in flight
+                            </span>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+                                  :class="routerData.shadow?.enabled ? 'bg-blue-50 text-blue-600 border border-blue-200' : 'bg-neutral-100 text-neutral-500 border border-neutral-200'">
+                                Shadow: <span x-text="routerData.shadow?.enabled ? routerData.shadow.backend : 'off'"></span>
+                            </span>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+                                  :class="routerData.config?.telemetry?.enabled ? 'bg-green-50 text-green-600 border border-green-200' : 'bg-neutral-100 text-neutral-500 border border-neutral-200'">
+                                Telemetry: <span x-text="routerData.config?.telemetry?.enabled ? 'on' : 'off'"></span>
+                            </span>
+                        </div>
+
+                        <div class="flex flex-wrap items-center gap-4 px-4 sm:px-6 py-4">
+                            <div class="flex items-center gap-2">
+                                <label class="text-sm text-neutral-600">Refresh</label>
+                                <select x-model.number="routerRefreshInterval" @change="restartRouterRefresh()"
+                                        class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white">
+                                    <option value="0">Off</option>
+                                    <option value="2">2s</option>
+                                    <option value="5">5s</option>
+                                    <option value="15">15s</option>
+                                    <option value="60">60s</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-sm text-neutral-600">Window</label>
+                                <select x-model.number="routerWindowSize" @change="loadRouterActivity()"
+                                        class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white">
+                                    <option value="25">Last 25</option>
+                                    <option value="50">Last 50</option>
+                                    <option value="100">Last 100</option>
+                                    <option value="200">Last 200</option>
+                                </select>
+                            </div>
+                            <button @click="loadRouterActivity()"
+                                    :disabled="routerLoading"
+                                    class="px-4 py-2 bg-neutral-900 text-white text-sm font-medium rounded-lg hover:bg-neutral-800 transition-all disabled:opacity-50">
+                                <span x-show="!routerLoading">Refresh</span>
+                                <span x-show="routerLoading">Loading…</span>
+                            </button>
+                            <span x-show="routerError" class="text-sm text-red-500" x-text="routerError"></span>
+                        </div>
+                    </div>
+
+                    <!-- Stats Cards -->
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Decisions</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerDecisions().length"></p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Override share</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerOverrideSharePct() != null ? routerOverrideSharePct().toFixed(1) + '%' : '—'"></p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Median classify</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerMedianClassifyMs() != null ? routerMedianClassifyMs().toFixed(0) + ' ms' : '—'"></p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Median TTFT</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerMedianTtftMs() != null ? routerMedianTtftMs().toFixed(0) + ' ms' : '—'"></p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Median cache hit</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerMedianCacheHitPct() != null ? routerMedianCacheHitPct().toFixed(1) + '%' : '—'"></p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Target flips</p>
+                            <p class="text-xl font-bold text-neutral-900" x-text="routerTargetFlips()"></p>
+                        </div>
+                    </div>
+
+                    <!-- Distributions -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                            <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                                <i data-lucide="bar-chart-2" class="w-4 h-4 text-neutral-500"></i>
+                                <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">By rule</span>
+                            </div>
+                            <div class="p-4 space-y-2">
+                                <div x-show="routerRuleDistribution().length === 0" class="text-xs text-neutral-400">No decisions in window.</div>
+                                <template x-for="[rule, count] in routerRuleDistribution()" :key="rule">
+                                    <div>
+                                        <div class="flex items-center justify-between text-xs mb-1">
+                                            <span class="text-neutral-700 font-mono" x-text="rule"></span>
+                                            <span class="text-neutral-500 tabular-nums" x-text="count"></span>
+                                        </div>
+                                        <div class="w-full bg-neutral-100 rounded-full h-1.5 overflow-hidden">
+                                            <div class="h-full bg-neutral-900 rounded-full"
+                                                 :style="'width: ' + (count / routerRuleDistribution()[0][1] * 100) + '%'"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                            <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                                <i data-lucide="target" class="w-4 h-4 text-neutral-500"></i>
+                                <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">By target</span>
+                            </div>
+                            <div class="p-4 space-y-2">
+                                <div x-show="routerTargetDistribution().length === 0" class="text-xs text-neutral-400">No decisions in window.</div>
+                                <template x-for="[target, count] in routerTargetDistribution()" :key="target">
+                                    <div>
+                                        <div class="flex items-center justify-between text-xs mb-1">
+                                            <span class="text-neutral-700 font-mono" x-text="target"></span>
+                                            <span class="text-neutral-500 tabular-nums" x-text="count"></span>
+                                        </div>
+                                        <div class="w-full bg-neutral-100 rounded-full h-1.5 overflow-hidden">
+                                            <div class="h-full bg-neutral-900 rounded-full"
+                                                 :style="'width: ' + (count / routerTargetDistribution()[0][1] * 100) + '%'"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Shadow Agreement -->
+                    <div x-show="routerHasShadow()" x-cloak class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
+                        <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                            <i data-lucide="waypoints" class="w-4 h-4 text-neutral-500"></i>
+                            <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Shadow label × routed target</span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="border-b border-neutral-200 bg-neutral-50">
+                                        <th class="text-left px-4 py-2 font-semibold text-neutral-600">Label</th>
+                                        <template x-for="tgt in routerShadowTargets()" :key="tgt">
+                                            <th class="text-right px-4 py-2 font-semibold text-neutral-600 font-mono" x-text="tgt"></th>
+                                        </template>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="label in routerShadowLabels()" :key="label">
+                                        <tr class="border-b border-neutral-100">
+                                            <td class="px-4 py-2 font-medium text-neutral-700" x-text="label"></td>
+                                            <template x-for="tgt in routerShadowTargets()" :key="tgt">
+                                                <td class="px-4 py-2 text-right tabular-nums text-neutral-700" x-text="routerShadowCell(label, tgt)"></td>
+                                            </template>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Decision Feed -->
+                    <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
+                        <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                            <i data-lucide="table-2" class="w-4 h-4 text-neutral-500"></i>
+                            <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Decisions</span>
+                        </div>
+                        <div x-show="routerDecisions().length === 0" class="px-6 py-10 text-center text-sm text-neutral-400">No routing decisions in this window.</div>
+                        <div x-show="routerDecisions().length > 0" class="overflow-x-auto">
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="border-b border-neutral-200 bg-neutral-50">
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Time</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Rule</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Target</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Override</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Classify ms</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">TTFT ms</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Cache %</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Tokens</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Shadow</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Finish</th>
+                                    </tr>
+                                </thead>
+                                <template x-for="(row, idx) in routerDecisions()" :key="idx">
+                                    <tbody>
+                                        <tr class="border-b border-neutral-100 hover:bg-neutral-50 transition-colors cursor-pointer"
+                                            :class="!row.outcome ? 'italic text-neutral-400' : ''"
+                                            @click="toggleRouterRow(idx)">
+                                            <td class="px-3 py-2 font-mono" x-text="routerRowTime(row.ts)"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.rule_fired"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.target"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.override || '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.classify_ms != null ? row.classify_ms.toFixed(0) : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.ttft_ms != null ? row.outcome.ttft_ms.toFixed(0) : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="routerCachePct(row) != null ? routerCachePct(row).toFixed(0) + '%' : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.completion_tokens ?? '—'"></td>
+                                            <td class="px-3 py-2" x-text="row.shadow?.label || '—'"></td>
+                                            <td class="px-3 py-2" x-text="row.outcome?.finish_reason || (row.outcome ? '—' : 'in flight')"></td>
+                                        </tr>
+                                        <tr x-show="routerExpandedRow === idx" x-cloak class="border-b border-neutral-100 bg-neutral-50/60">
+                                            <td colspan="10" class="px-4 py-3">
+                                                <pre class="text-[11px] whitespace-pre-wrap break-all bg-neutral-900 text-green-400 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(row, null, 2)"></pre>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </template>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Configuration -->
+                    <template x-if="routerConfig">
+                        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                            <div class="flex items-center justify-between px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                                <div class="flex items-center gap-3">
+                                    <i data-lucide="sliders-horizontal" class="w-4 h-4 text-neutral-500"></i>
+                                    <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Configuration</span>
+                                </div>
+                                <span class="px-1.5 py-0.5 text-[9px] font-medium rounded bg-amber-50 text-amber-600 border border-amber-200">Restart required</span>
+                            </div>
+
+                            <datalist id="router-target-models">
+                                <template x-for="m in sortedModels" :key="m.id">
+                                    <option :value="m.id"></option>
+                                </template>
+                            </datalist>
+
+                            <!-- Core -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Core</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Enable routing</label>
+                                    <button type="button" @click="routerConfig.enabled = !routerConfig.enabled"
+                                            :class="routerConfig.enabled ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.enabled ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Virtual model id</label>
+                                    <input type="text" x-model="routerConfig.virtual_model_id" placeholder="auto"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-48">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Router model</label>
+                                    <input type="text" x-model="routerConfig.router_model"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Profiler kind</label>
+                                    <select x-model="routerConfig.profiler_kind"
+                                            class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-48">
+                                        <option value="generative">generative</option>
+                                        <option value="capability">capability</option>
+                                    </select>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Capability threshold</label>
+                                    <input type="number" x-model.number="routerConfig.capability_threshold" min="0" max="1" step="0.01"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Classify timeout (s)</label>
+                                    <input type="number" x-model.number="routerConfig.classify_timeout_s" min="0" step="0.1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                            </div>
+
+                            <!-- Targets -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Targets</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Small</label>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.small"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Big</label>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.big"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Vision</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Leave blank to leave unset.</p>
+                                    </div>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.vision"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Audio</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Leave blank to leave unset.</p>
+                                    </div>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.audio"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                            </div>
+
+                            <!-- Policy -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Policy</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Escalate complexity at</label>
+                                    <input type="number" x-model.number="routerConfig.policy.escalate_complexity_at" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Escalate math complexity at</label>
+                                    <input type="number" x-model.number="routerConfig.policy.escalate_math_complexity_at" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Escalate code complexity at</label>
+                                    <input type="number" x-model.number="routerConfig.policy.escalate_code_complexity_at" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Fail-open target</label>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.policy.fail_open_target"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Agentic override on tool use</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Force the big target once a request carries tool calls.</p>
+                                    </div>
+                                    <button type="button" @click="routerConfig.policy.agentic_override.on_tools = !routerConfig.policy.agentic_override.on_tools"
+                                            :class="routerConfig.policy.agentic_override.on_tools ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.policy.agentic_override.on_tools ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Agentic override max user turns</label>
+                                    <input type="number" x-model.number="routerConfig.policy.agentic_override.max_user_turns" min="1" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                            </div>
+
+                            <!-- Table dispatch -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Table dispatch</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Enable N-way dispatch</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Route on the measured suitability table instead of the binary small/big pair.</p>
+                                    </div>
+                                    <button type="button" @click="routerConfig.table_dispatch.enabled = !routerConfig.table_dispatch.enabled"
+                                            :class="routerConfig.table_dispatch.enabled ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.table_dispatch.enabled ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Default target</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Leave blank to fall back to the big target.</p>
+                                    </div>
+                                    <input type="text" list="router-target-models" x-model="routerConfig.table_dispatch.default_target"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Residency epsilon</label>
+                                    <input type="number" x-model.number="routerConfig.table_dispatch.residency_epsilon" min="0" step="0.01"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Max interactive median Q time (s)</label>
+                                    <input type="number" x-model.number="routerConfig.table_dispatch.max_interactive_median_q_time_s" min="0" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                            </div>
+
+                            <!-- Telemetry -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Telemetry</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Decision telemetry</label>
+                                    <button type="button" @click="routerConfig.telemetry.enabled = !routerConfig.telemetry.enabled"
+                                            :class="routerConfig.telemetry.enabled ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.telemetry.enabled ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Path</label>
+                                    <input type="text" x-model="routerConfig.telemetry.path"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                </div>
+                            </div>
+
+                            <!-- Shadow labeler -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Shadow labeler</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Enabled</label>
+                                    <button type="button" @click="routerConfig.shadow_labeler.enabled = !routerConfig.shadow_labeler.enabled"
+                                            :class="routerConfig.shadow_labeler.enabled ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.shadow_labeler.enabled ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Use case</label>
+                                    <input type="text" x-model="routerConfig.shadow_labeler.use_case"
+                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-48">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Timeout (s)</label>
+                                    <input type="number" x-model.number="routerConfig.shadow_labeler.timeout_s" min="0" step="0.5"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                            </div>
+
+                            <!-- Idle sweep -->
+                            <div class="px-6 pt-5 pb-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500">Idle sweep</div>
+                            <div class="divide-y divide-neutral-100">
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Enabled</label>
+                                    <button type="button" @click="routerConfig.idle_sweep.enabled = !routerConfig.idle_sweep.enabled"
+                                            :class="routerConfig.idle_sweep.enabled ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.idle_sweep.enabled ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Idle after (s)</label>
+                                    <input type="number" x-model.number="routerConfig.idle_sweep.idle_after_s" min="0" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700">Poll interval (s)</label>
+                                    <input type="number" x-model.number="routerConfig.idle_sweep.poll_interval_s" min="0" step="1"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
+                                <div class="px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700 block mb-2">Benchmarks (read-only)</label>
+                                    <pre class="text-[11px] bg-neutral-50 border border-neutral-200 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(routerConfig.idle_sweep.benchmarks, null, 2)"></pre>
+                                </div>
+                            </div>
+
+                            <!-- Save -->
+                            <div class="flex items-center gap-3 px-4 sm:px-6 py-4 border-t border-neutral-100 bg-neutral-50">
+                                <button @click="saveRouterConfig()"
+                                        :disabled="routerSaving"
+                                        class="px-4 py-2 bg-neutral-900 text-white text-sm font-medium rounded-lg hover:bg-neutral-800 transition-all disabled:opacity-50">
+                                    <span x-show="!routerSaving">Save</span>
+                                    <span x-show="routerSaving">Saving…</span>
+                                </button>
+                                <span x-show="routerSaveSuccess" class="text-sm text-green-600" x-text="routerSaveMessage"></span>
+                                <span x-show="routerSaveError" class="text-sm text-red-500" x-text="routerSaveError"></span>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>

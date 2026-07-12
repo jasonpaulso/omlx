@@ -61,7 +61,7 @@
         'gemma4_unified_assistant',
         'qwen3_5_mtp',
     ]);
-    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'bench']);
+    const DASHBOARD_MAIN_TABS = new Set(['status', 'settings', 'models', 'logs', 'router', 'bench']);
     const DASHBOARD_SETTINGS_TABS = new Set(['global', 'integrations', 'models']);
     const DASHBOARD_MODELS_TABS = new Set(['manager', 'downloader', 'quantizer', 'uploader']);
     const DASHBOARD_BENCH_TABS = new Set(['throughput', 'accuracy', 'suitability']);
@@ -119,7 +119,6 @@
                 ui: { language: 'en' },
                 idle_timeout: { idle_timeout_seconds: null },
                 system: { total_memory_bytes: 0, total_memory: '', auto_model_memory: '', ssd_total_bytes: 0, ssd_total: '' },
-                routing: { enabled: false, virtual_model_id: 'auto', telemetry_enabled: true, table_dispatch_enabled: false, table_dispatch_default_target: null, targets_vision: null },
             },
 
             // Cache slider (0-100%)
@@ -292,7 +291,24 @@
             logTotalLines: 0,
             logLastUpdated: '',
             logMinLevel: 'TRACE',
+            logRouterOnly: false,
             _logRefreshTimer: null,
+
+            // Router tab state (backend: omlx/routing/*)
+            routerData: { service_active: false, config: null, decisions: [], pending_count: 0, shadow: { enabled: false, backend: null } },
+            routerConfig: null,          // dedicated form-bound copy, deep-copied once from the fetched config
+            routerConfigInitialized: false,
+            routerLoading: false,
+            routerError: '',
+            routerRefreshInterval: 5,    // seconds, 0 = off
+            routerAutoRefresh: false,
+            routerWindowSize: 100,
+            routerExpandedRow: null,     // index into routerDecisions() currently expanded
+            routerSaving: false,
+            routerSaveSuccess: false,
+            routerSaveMessage: '',
+            routerSaveError: '',
+            _routerRefreshTimer: null,
 
             // Models sub-tab state
             modelsTab: 'manager',
@@ -666,6 +682,12 @@
                 } else {
                     this.stopLogRefresh();
                 }
+                if (value === 'router') {
+                    await this.loadRouterActivity();
+                    this.startRouterRefresh();
+                } else {
+                    this.stopRouterRefresh();
+                }
                 if (value === 'models') {
                     const loads = [this.loadHFModels(), this.loadHFTasks(), this.loadOQTasks()];
                     if (this.modelsTab === 'downloader' && !this.hfRecommendedLoaded) {
@@ -824,7 +846,6 @@
                             integrations: { ...this.globalSettings.integrations, ...data.integrations },
                             idle_timeout: { ...this.globalSettings.idle_timeout, ...data.idle_timeout },
                             system: { ...this.globalSettings.system, ...data.system },
-                            routing: { ...this.globalSettings.routing, ...data.routing },
                         };
                         this.globalSettings.ui = data.ui || { language: 'en' };
 
@@ -2465,37 +2486,6 @@
                 }
             },
 
-            async saveRoutingSettings() {
-                // Routing settings take effect on server restart (the RoutingService
-                // is built once at startup). Surface the restart notice returned by
-                // the API so the operator knows a restart is pending.
-                try {
-                    const r = this.globalSettings.routing;
-                    const response = await fetch('/admin/api/global-settings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            routing_enabled: r.enabled,
-                            routing_virtual_model_id: r.virtual_model_id || 'auto',
-                            routing_telemetry_enabled: r.telemetry_enabled,
-                            routing_table_dispatch_enabled: r.table_dispatch_enabled,
-                            routing_table_dispatch_default_target: r.table_dispatch_default_target || null,
-                            routing_targets_vision: r.targets_vision || null,
-                        }),
-                    });
-                    if (response.ok) {
-                        const data = await response.json();
-                        this.saveSuccess = true;
-                        this.saveMessage = data.message || 'Routing settings saved.';
-                        setTimeout(() => { this.saveSuccess = false; }, 6000);
-                    } else {
-                        console.error('Failed to save routing settings');
-                    }
-                } catch (err) {
-                    console.error('Failed to save routing settings:', err);
-                }
-            },
-
             _launchCmd(tool) {
                 const raw = this.stats.cli_prefix || 'omlx';
                 const cli = raw === 'omlx' ? raw : this.shellQuote(raw);
@@ -3961,12 +3951,21 @@
             filteredLogContent() {
                 const LEVELS = ['TRACE', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
                 const minIdx = LEVELS.indexOf(this.logMinLevel);
-                if (minIdx <= 0) return this.logContent;
-                const levelRe = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - \S+ - (TRACE|DEBUG|INFO|WARNING|ERROR|CRITICAL) - /;
+                // %(asctime)s - %(name)s - %(levelname)s - %(message)s
+                const lineRe = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (\S+) - (TRACE|DEBUG|INFO|WARNING|ERROR|CRITICAL) - (.*)$/;
                 let visible = true;
                 return this.logContent.split('\n').filter(line => {
-                    const m = line.match(levelRe);
-                    if (m) visible = LEVELS.indexOf(m[1]) >= minIdx;
+                    const m = line.match(lineRe);
+                    if (m) {
+                        const [, name, level, message] = m;
+                        const levelOk = minIdx <= 0 || LEVELS.indexOf(level) >= minIdx;
+                        const routerOk = !this.logRouterOnly
+                            || name.startsWith('omlx.routing')
+                            || message.includes('Routing:')
+                            || message.includes('shadow labeler');
+                        visible = levelOk && routerOk;
+                    }
+                    // Continuation lines (stack traces, etc.) inherit the parent line's visibility.
                     return visible;
                 }).join('\n');
             },
@@ -4046,6 +4045,211 @@
             restartLogRefresh() {
                 if (this.mainTab === 'logs') {
                     this.startLogRefresh();
+                }
+            },
+
+            // Router tab functions
+            async loadRouterActivity() {
+                this.routerLoading = true;
+                this.routerError = '';
+                try {
+                    const response = await fetch(`/admin/api/routing/activity?limit=${this.routerWindowSize}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.routerData = data;
+                        // Deep-copy into a dedicated form object once, so periodic
+                        // refreshes of the decision feed never clobber in-progress edits.
+                        if (!this.routerConfigInitialized) {
+                            this.routerConfig = this._normalizeRouterConfig(JSON.parse(JSON.stringify(data.config || {})));
+                            this.routerConfigInitialized = true;
+                        }
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.routerError = data.detail || 'Failed to load routing activity.';
+                    }
+                } catch (err) {
+                    console.error('Failed to load routing activity:', err);
+                    this.routerError = 'Failed to load routing activity.';
+                } finally {
+                    this.routerLoading = false;
+                }
+            },
+
+            startRouterRefresh() {
+                this.stopRouterRefresh();
+                if (this.routerRefreshInterval > 0) {
+                    this.routerAutoRefresh = true;
+                    this._routerRefreshTimer = setInterval(() => {
+                        this.loadRouterActivity();
+                    }, this.routerRefreshInterval * 1000);
+                }
+            },
+
+            stopRouterRefresh() {
+                if (this._routerRefreshTimer) {
+                    clearInterval(this._routerRefreshTimer);
+                    this._routerRefreshTimer = null;
+                }
+                this.routerAutoRefresh = false;
+            },
+
+            restartRouterRefresh() {
+                if (this.mainTab === 'router') {
+                    this.startRouterRefresh();
+                }
+            },
+
+            toggleRouterRow(idx) {
+                this.routerExpandedRow = this.routerExpandedRow === idx ? null : idx;
+            },
+
+            routerDecisions() {
+                return this.routerData.decisions || [];
+            },
+
+            _routerMedian(nums) {
+                if (!nums.length) return null;
+                const sorted = [...nums].sort((a, b) => a - b);
+                const mid = Math.floor(sorted.length / 2);
+                return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            },
+
+            routerOverrideSharePct() {
+                const rows = this.routerDecisions();
+                if (!rows.length) return null;
+                return (rows.filter(r => r.override).length / rows.length) * 100;
+            },
+
+            routerMedianClassifyMs() {
+                return this._routerMedian(this.routerDecisions().map(r => r.classify_ms).filter(v => v != null));
+            },
+
+            routerMedianTtftMs() {
+                const vals = this.routerDecisions()
+                    .filter(r => r.outcome && r.outcome.ttft_ms != null)
+                    .map(r => r.outcome.ttft_ms);
+                return this._routerMedian(vals);
+            },
+
+            routerCachePct(row) {
+                if (!row.outcome || row.outcome.cached_tokens == null || !row.outcome.prompt_tokens) return null;
+                return (row.outcome.cached_tokens / row.outcome.prompt_tokens) * 100;
+            },
+
+            routerMedianCacheHitPct() {
+                const vals = this.routerDecisions()
+                    .map(r => this.routerCachePct(r))
+                    .filter(v => v != null);
+                return this._routerMedian(vals);
+            },
+
+            routerTargetFlips() {
+                const rows = this.routerDecisions();
+                let flips = 0;
+                for (let i = 1; i < rows.length; i++) {
+                    if (rows[i].target !== rows[i - 1].target) flips++;
+                }
+                return flips;
+            },
+
+            routerDistribution(field) {
+                const counts = {};
+                for (const r of this.routerDecisions()) {
+                    const key = r[field] || 'unknown';
+                    counts[key] = (counts[key] || 0) + 1;
+                }
+                return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+            },
+
+            routerRuleDistribution() {
+                return this.routerDistribution('rule_fired');
+            },
+
+            routerTargetDistribution() {
+                return this.routerDistribution('target');
+            },
+
+            routerHasShadow() {
+                return this.routerDecisions().some(r => r.shadow);
+            },
+
+            routerShadowLabels() {
+                const order = ['TRIVIAL', 'SIMPLE', 'MODERATE', 'COMPLEX'];
+                const labels = new Set(this.routerDecisions().filter(r => r.shadow?.label).map(r => r.shadow.label));
+                return [...labels].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+            },
+
+            routerShadowTargets() {
+                return [...new Set(this.routerDecisions().filter(r => r.shadow).map(r => r.target))].sort();
+            },
+
+            routerShadowCell(label, target) {
+                return this.routerDecisions().filter(r => r.shadow?.label === label && r.target === target).length;
+            },
+
+            routerRowTime(iso) {
+                if (!iso) return '';
+                const d = new Date(iso);
+                return isNaN(d) ? iso : d.toLocaleTimeString('en-US', { hour12: false });
+            },
+
+            // Normalize nullable string fields to '' so text inputs bind cleanly.
+            _normalizeRouterConfig(cfg) {
+                cfg.targets = cfg.targets || {};
+                cfg.targets.vision = cfg.targets.vision || '';
+                cfg.targets.audio = cfg.targets.audio || '';
+                cfg.policy = cfg.policy || {};
+                cfg.policy.agentic_override = cfg.policy.agentic_override || { on_tools: true, max_user_turns: 3 };
+                cfg.table_dispatch = cfg.table_dispatch || {};
+                cfg.table_dispatch.default_target = cfg.table_dispatch.default_target || '';
+                cfg.telemetry = cfg.telemetry || {};
+                cfg.shadow_labeler = cfg.shadow_labeler || {};
+                cfg.idle_sweep = cfg.idle_sweep || {};
+                cfg.idle_sweep.benchmarks = cfg.idle_sweep.benchmarks || {};
+                return cfg;
+            },
+
+            async saveRouterConfig() {
+                this.routerSaving = true;
+                this.routerSaveSuccess = false;
+                this.routerSaveError = '';
+                try {
+                    const cfg = JSON.parse(JSON.stringify(this.routerConfig));
+                    // Empty vision/audio target strings mean "unset" -> omit the key.
+                    if (cfg.targets) {
+                        if (!cfg.targets.vision) delete cfg.targets.vision;
+                        if (!cfg.targets.audio) delete cfg.targets.audio;
+                    }
+                    if (cfg.table_dispatch) {
+                        cfg.table_dispatch.default_target = cfg.table_dispatch.default_target || null;
+                    }
+                    const response = await fetch('/admin/api/routing/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(cfg),
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.routerSaveSuccess = true;
+                        this.routerSaveMessage = data.restart_required
+                            ? 'Saved — takes effect on restart.'
+                            : 'Saved.';
+                        setTimeout(() => { this.routerSaveSuccess = false; }, 6000);
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.routerSaveError = Array.isArray(data.detail)
+                            ? data.detail.map(e => (e && typeof e === 'object') ? (e.msg || JSON.stringify(e)) : String(e)).join(', ')
+                            : (data.detail || 'Failed to save router configuration.');
+                    }
+                } catch (err) {
+                    console.error('Failed to save router configuration:', err);
+                    this.routerSaveError = 'Failed to save router configuration.';
+                } finally {
+                    this.routerSaving = false;
                 }
             },
 
