@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -38,6 +39,11 @@ EnabledGetter = Callable[[], set[str]]
 # record_outcome, so its pending row would otherwise sit in memory until
 # shutdown. Flush anything this stale on every new decision.
 _ORPHAN_MAX_AGE_S = 600
+
+# Ring buffer of recent decision rows kept for the admin Router tab. Row
+# dicts are shared with _pending, so outcomes and shadow labels appear in
+# the buffer as they land without extra bookkeeping.
+_RECENT_MAX = 256
 
 
 @dataclass
@@ -155,6 +161,7 @@ class RoutingService:
         self._fit_budget_getter: FitBudgetGetter | None = None
         self._enabled_getter: EnabledGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
+        self._recent: deque[dict[str, Any]] = deque(maxlen=_RECENT_MAX)
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
         # Apple FM shadow labeler (off by default): async second-opinion
@@ -446,6 +453,39 @@ class RoutingService:
             # best-effort by design.
             row["shadow"] = rec
 
+    @property
+    def pending_count(self) -> int:
+        """Number of in-flight decision rows awaiting an outcome."""
+        return len(self._pending)
+
+    def shadow_status(self) -> dict[str, Any]:
+        """Shadow labeler state for the admin surface."""
+        return {
+            "enabled": self._shadow is not None,
+            "backend": self._shadow.backend() if self._shadow else None,
+        }
+
+    def recent_decisions(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Newest-first recent decision rows for the admin Router tab.
+
+        Serves from the in-memory ring buffer (rows mutate in place as
+        outcomes and shadow labels land), topped up from the telemetry
+        file tail so the feed survives a restart. Never raises.
+        """
+        limit = max(1, min(limit, _RECENT_MAX))
+        rows = list(self._recent)[-limit:]
+        rows.reverse()
+        if len(rows) < limit:
+            seen = {r.get("request_id") for r in rows}
+            path = Path(self.settings.telemetry.path).expanduser()
+            for row in read_telemetry_tail(path, limit):
+                if row.get("request_id") in seen:
+                    continue
+                rows.append(row)
+                if len(rows) >= limit:
+                    break
+        return rows
+
     async def close(self) -> None:
         """Flush pending telemetry (rows without outcomes flush with outcome=null)."""
         for task in list(self._shadow_tasks):
@@ -473,7 +513,7 @@ class RoutingService:
         self._flush_orphans()
         if messages is not None:
             self._maybe_shadow_label(request_id, messages)
-        self._pending[request_id] = {
+        row: dict[str, Any] = {
             "ts": _now_iso(),
             "request_id": request_id,
             "endpoint": endpoint,
@@ -494,6 +534,8 @@ class RoutingService:
             "shadow": None,
             "outcome": None,
         }
+        self._pending[request_id] = row
+        self._recent.append(row)
 
     def _flush_orphans(self) -> None:
         """Move pending rows older than _ORPHAN_MAX_AGE_S to the write queue.
@@ -540,6 +582,28 @@ class RoutingService:
             except OSError as e:
                 logger.warning("routing telemetry write failed: %s", e)
             self._queue.task_done()
+
+
+def read_telemetry_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    """Parse the last `limit` rows of a routing telemetry jsonl, newest first.
+
+    Reads the whole file line-by-line (admin-surface only, never on the
+    request path). Returns [] on any I/O problem; skips malformed lines.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines: deque[str] = deque(f, maxlen=limit)
+    except OSError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def _now_iso() -> str:

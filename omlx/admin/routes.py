@@ -6123,6 +6123,104 @@ async def get_suitability_deltas(
 
 
 # =============================================================================
+# Semantic Routing API Routes (Router tab)
+# =============================================================================
+
+
+@router.get("/api/routing/activity")
+async def get_routing_activity(
+    limit: int = 100,
+    is_admin: bool = Depends(require_admin),
+):
+    """Recent routing decisions + live config for the admin Router tab.
+
+    Works with or without an active RoutingService: when routing is
+    disabled the decision feed falls back to the telemetry file tail so
+    past activity stays visible.
+    """
+    from ..routing.service import read_telemetry_tail
+
+    global_settings = _get_global_settings()
+    routing = global_settings.routing
+    limit = max(1, min(limit, 256))
+
+    server_state = _get_server_state() if _get_server_state else None
+    service = getattr(server_state, "routing_service", None)
+
+    if service is not None:
+        decisions = service.recent_decisions(limit)
+        pending = service.pending_count
+        shadow = service.shadow_status()
+    else:
+        path = Path(routing.telemetry.path).expanduser()
+        decisions = read_telemetry_tail(path, limit)
+        pending = 0
+        shadow = {"enabled": routing.shadow_labeler.enabled, "backend": None}
+
+    return {
+        "service_active": service is not None,
+        "config": routing.to_dict(),
+        "decisions": decisions,
+        "pending_count": pending,
+        "shadow": shadow,
+    }
+
+
+@router.post("/api/routing/settings")
+async def update_routing_settings(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Replace the routing settings block from the Router tab's config form.
+
+    Takes the full nested routing dict (same shape as `config` in
+    /api/routing/activity). All routing settings take effect on restart —
+    the RoutingService is built once at startup (see docs/ROUTING.md).
+    """
+    from ..settings import RoutingSettings
+
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    # Drop empty-string target entries (an unset vision/audio target must
+    # be absent, not "").
+    targets = data.get("targets")
+    if isinstance(targets, dict):
+        data["targets"] = {
+            k: v for k, v in targets.items() if isinstance(v, str) and v.strip()
+        }
+
+    try:
+        new_routing = RoutingSettings.from_dict(data)
+    except (TypeError, ValueError, AttributeError) as e:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid routing settings: {e}"
+        ) from e
+    if not str(new_routing.virtual_model_id).strip():
+        raise HTTPException(status_code=400, detail="virtual_model_id cannot be empty")
+
+    global_settings = _get_global_settings()
+    previous = global_settings.routing
+    global_settings.routing = new_routing
+
+    errors = global_settings.validate()
+    if errors:
+        global_settings.routing = previous
+        raise HTTPException(status_code=400, detail=errors)
+    try:
+        global_settings.save()
+    except Exception as e:
+        global_settings.routing = previous
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save settings: {e}"
+        ) from e
+
+    logger.info("Routing settings replaced via Router tab (restart required)")
+    return {"success": True, "restart_required": True}
+
+
+# =============================================================================
 # Benchmark API Routes (Throughput)
 # =============================================================================
 

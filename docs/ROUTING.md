@@ -147,17 +147,35 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
 
 Enable order in practice: turn on `routing` (binary) first, run a roster sweep to populate the table, verify it, then flip `table_dispatch.enabled`.
 
-### UI-configurable subset
+### Router admin tab (full config + live activity)
 
-The **Global Settings** admin tab has a *Semantic Routing* panel exposing the
-knobs an operator flips at runtime: `enabled`, `virtual_model_id`,
-`telemetry.enabled`, `table_dispatch.enabled`, `table_dispatch.default_target`,
-and `targets.vision`. The panel is badged **restart-required** — the POST
-persists to `settings.json` immediately but the `RoutingService` is built once
-at startup, so a restart is needed to pick the changes up (`POST
-/admin/api/global-settings` returns them under `restart_required`, not
-`runtime_applied`). The other fields (policy thresholds, `router_model`, the
-`small`/`big` targets, `residency_epsilon`) remain settings.json-only.
+The admin UI has a dedicated **Router** tab (loop-state phase D, 2026-07-12)
+— the old Global Settings *Semantic Routing* panel is gone and points here.
+
+- **Configuration.** The *entire* `routing` settings block is editable: core
+  (`enabled`, `virtual_model_id`, `router_model`, `profiler_kind`,
+  `capability_threshold`, `classify_timeout_s`), all four `targets`
+  (`small`/`big`/`vision`/`audio`), `policy` incl. `agentic_override`,
+  `table_dispatch` (incl. `residency_epsilon`,
+  `max_interactive_median_q_time_s`), `telemetry`, `shadow_labeler`, and
+  `idle_sweep`. Saved as one nested dict via `POST
+  /admin/api/routing/settings`, which replaces the whole block
+  (`RoutingSettings.from_dict` → `validate()` → `save()`, with rollback on
+  failure; empty-string target entries are dropped). Everything is badged
+  **restart-required** — the `RoutingService` is built once at startup.
+- **Activity.** `GET /admin/api/routing/activity?limit=N` (clamped to 256)
+  returns the config snapshot, newest-first recent decision rows, in-flight
+  pending count, and shadow-labeler status. Rows come from a 256-row
+  in-memory ring buffer in `RoutingService` (`_recent` shares row dicts
+  with `_pending`, so outcomes and shadow labels fill in live), topped up
+  from the telemetry jsonl tail after a restart (`read_telemetry_tail`).
+  The endpoint also works with routing disabled (file tail only), so past
+  activity stays visible. Window stats — rule/target distributions,
+  override share, target flips, median classify/TTFT/cache-hit, shadow ×
+  target matrix — are computed client-side over the loaded window.
+- **Log filter.** The Logs tab has a client-side *Router only* toggle
+  keeping lines from `omlx.routing.*` loggers or messages carrying
+  `Routing:` / `shadow labeler`.
 
 ### Per-model routing gate (`enable_routing`)
 
@@ -237,7 +255,7 @@ pytest -q                                      # full fast suite
 - **Escalation 507s** mean the big/frontier target can't fit alongside what's pinned/resident. Either free room (unpin) or point `big` at a smaller resident model. Fail-open still routes there, so the 507 comes from the engine, not routing.
 - **A 507'd routed request leaves a telemetry row pending** (decision recorded, no outcome) until the orphan flush reaps it: `_flush_orphans()` runs on every new decision and flushes rows older than 10 minutes with `outcome: null`.
 - **Tables don't travel between machines.** Copying `suitability.json` across hosts imports wrong timings and possibly wrong fit. Sweep each host.
-- **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect — including everything in the Global Settings *Semantic Routing* panel (it persists immediately but the service is built at boot). The **exception is `enable_routing`**: the per-model gate is read live per request, so toggling it in Model Settings takes effect on the next routed request with no restart.
+- **Config loads once at startup.** Editing `routing` in settings.json requires a server restart to take effect — including everything in the admin Router tab's configuration form (it persists immediately but the service is built at boot). The **exception is `enable_routing`**: the per-model gate is read live per request, so toggling it in Model Settings takes effect on the next routed request with no restart.
 - **The gate is silent when unused.** If you enable `table_dispatch` but forget to opt any model in with `enable_routing`, nothing changes — the empty enabled set makes the gate inert (fail-open), *not* a collapse to `default_target`. To see which models a decision skipped for being un-opted-in, read the `disabled` field in `routing_decisions.jsonl`.
 - **Idle sweeps preempt on the hot path (M4.4).** When `idle_sweep.enabled`, `engine_pool.get_engine()` awaits a preemptor on every *real* request (bench loads pass `stamp_activity=False` and skip it). The preemptor is a no-op unless a passive sweep is live, in which case it `cancel_queue()`s and awaits the run's teardown before the request loads its model — so an interrupting request eats one bench-abort + evict + load (a few seconds) but is never stranded. A *user-initiated* sweep is never preempted (only the passive-sweep tag is). Because this touches the serving path, **validate on a non-production instance before enabling on a busy one**: turn it on, drive traffic mid-sweep, confirm the request is served and the sweep resumes next idle window. The preemption race can't be unit-tested — only the predicate, the tag lifecycle, and the teardown wait are.
 - **A passive sweep re-arms its idle clock.** After a sweep drains (or is preempted), the loop resets `_last_request_monotonic` to now, so the next sweep waits a full `idle_after_s` rather than spinning no-op gap-fills every `poll_interval_s`.
@@ -269,6 +287,13 @@ flushed). Purpose: an independent labeled corpus for the M6 outcome loop
 and continuous validation of the in-process profiler. Turns whose last
 user message has no text (tool_result-only agent turns) are skipped —
 known coverage gap, revisit with loop-state context windows.
+**Router admin tab** (loop-state phase D): dedicated dashboard tab with
+the full routing config surface, a live decision feed + window stats fed
+by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a
+*Router only* log-viewer filter. Absorbs the older route-explain idea —
+the decision feed's expandable detail view shows `raw_analysis`,
+`candidates_considered`, `unfit`, `disabled`, and the shadow reason per
+row. See "Router admin tab" under Configuration.
 
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.
