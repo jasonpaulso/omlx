@@ -254,6 +254,17 @@ onto `default_target`, with a latency tiebreak for cold near-ties (all
 axes): lowest `median_q_time_s`, then lowest `load_s` — per-turn latency
 recurs every request while a load is paid once, and residency makes the
 cold pick sticky for the whole conversation.
+**Apple FM shadow labeler** (`routing.shadow_labeler`, off by default,
+macOS 27+): after each routing decision, an async on-device Foundation
+Models call (`fm respond --greedy` with an enum-constrained schema and
+head-500/tail-300 payload elision) attaches a TRIVIAL/SIMPLE/MODERATE/
+COMPLEX second opinion to the telemetry row (`shadow` field). Never on
+the request path; fail-silent on missing binary, timeout, or refusal;
+labels on fast non-streaming responses may be dropped (row already
+flushed). Purpose: an independent labeled corpus for the M6 outcome loop
+and continuous validation of the in-process profiler. Turns whose last
+user message has no text (tool_result-only agent turns) are skipped —
+known coverage gap, revisit with loop-state context windows.
 
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.

@@ -23,6 +23,7 @@ from typing import Any
 from omlx.routing import table as dispatch_table
 from omlx.routing.policy import decide
 from omlx.routing.profiler import RouterFeatures, make_profiler
+from omlx.routing.shadow import ShadowLabeler
 from omlx.settings import RoutingSettings
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,15 @@ class RoutingService:
         self._pending: dict[str, dict[str, Any]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
+        # Apple FM shadow labeler (off by default): async second-opinion
+        # labels attached to pending telemetry rows, never on the hot path.
+        sl = settings.shadow_labeler
+        self._shadow: ShadowLabeler | None = (
+            ShadowLabeler(use_case=sl.use_case, timeout_s=sl.timeout_s)
+            if sl.enabled
+            else None
+        )
+        self._shadow_tasks: set[asyncio.Task] = set()
 
     def set_engine_getter(self, fn: EngineGetter) -> None:
         """Set the async callable used to resolve the router engine.
@@ -220,7 +230,7 @@ class RoutingService:
                     raw_analysis=None,
                     classify_ms=(time.perf_counter() - start) * 1000,
                 )
-                self._record_decision(decision, request_id, endpoint, stream)
+                self._record_decision(decision, request_id, endpoint, stream, messages)
                 return decision
             logger.warning(
                 "Routing: request has %s parts but no targets.%s "
@@ -260,12 +270,12 @@ class RoutingService:
                 )
             except TimeoutError:
                 decision = self._fail_open("timeout", override, start)
-                self._record_decision(decision, request_id, endpoint, stream)
+                self._record_decision(decision, request_id, endpoint, stream, messages)
                 return decision
             except Exception as e:  # noqa: BLE001 - must never raise
                 logger.warning("routing classify failed: %s", e)
                 decision = self._fail_open("error", override, start)
-                self._record_decision(decision, request_id, endpoint, stream)
+                self._record_decision(decision, request_id, endpoint, stream, messages)
                 return decision
 
         # M3: table dispatch (opt-in) — measured per-axis leaders beat the
@@ -283,7 +293,7 @@ class RoutingService:
                 unfit=table_choice.unfit or None,
                 disabled=table_choice.disabled or None,
             )
-            self._record_decision(decision, request_id, endpoint, stream)
+            self._record_decision(decision, request_id, endpoint, stream, messages)
             return decision
 
         target_key, rule_fired = decide(features, override, cfg)
@@ -296,7 +306,7 @@ class RoutingService:
             raw_analysis=raw_analysis,
             classify_ms=classify_ms,
         )
-        self._record_decision(decision, request_id, endpoint, stream)
+        self._record_decision(decision, request_id, endpoint, stream, messages)
         return decision
 
     def _try_table(
@@ -414,8 +424,32 @@ class RoutingService:
         except Exception as e:  # noqa: BLE001 - must never raise
             logger.warning("routing record_outcome failed: %s", e)
 
+    def _maybe_shadow_label(self, request_id: str, messages: list) -> None:
+        """Fire-and-forget Apple FM second opinion for a pending row."""
+        if self._shadow is None:
+            return
+        text = _last_user_content(messages)
+        if not text:
+            return
+        task = asyncio.create_task(self._shadow_label(request_id, text))
+        self._shadow_tasks.add(task)
+        task.add_done_callback(self._shadow_tasks.discard)
+
+    async def _shadow_label(self, request_id: str, text: str) -> None:
+        rec = await self._shadow.classify(text) if self._shadow else None
+        if rec is None:
+            return
+        row = self._pending.get(request_id)
+        if row is not None:
+            # If the row already flushed (fast non-streaming response beat
+            # the ~0.7s fm call), the label is dropped — shadow data is
+            # best-effort by design.
+            row["shadow"] = rec
+
     async def close(self) -> None:
         """Flush pending telemetry (rows without outcomes flush with outcome=null)."""
+        for task in list(self._shadow_tasks):
+            task.cancel()
         for row in list(self._pending.values()):
             self._enqueue(row)
         self._pending.clear()
@@ -426,12 +460,19 @@ class RoutingService:
             self._writer_task = None
 
     def _record_decision(
-        self, decision: RouteDecision, request_id: str, endpoint: str, stream: bool
+        self,
+        decision: RouteDecision,
+        request_id: str,
+        endpoint: str,
+        stream: bool,
+        messages: list | None = None,
     ) -> None:
         if not self.settings.telemetry.enabled:
             return
         self._ensure_writer()
         self._flush_orphans()
+        if messages is not None:
+            self._maybe_shadow_label(request_id, messages)
         self._pending[request_id] = {
             "ts": _now_iso(),
             "request_id": request_id,
@@ -450,6 +491,7 @@ class RoutingService:
             ),
             "unfit": decision.unfit if decision.unfit else None,
             "disabled": decision.disabled if decision.disabled else None,
+            "shadow": None,
             "outcome": None,
         }
 

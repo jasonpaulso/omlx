@@ -858,6 +858,34 @@ class RoutingTelemetrySettings:
 
 
 @dataclass
+class RoutingShadowLabelerSettings:
+    """Apple FM shadow labeler (macOS 27+): async second-opinion labels
+    written into routing telemetry rows. Off by default; never on the
+    request path; silently inert when the `fm` CLI is absent."""
+
+    enabled: bool = False
+    use_case: str = "general"
+    timeout_s: float = 10.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "use_case": self.use_case,
+            "timeout_s": self.timeout_s,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingShadowLabelerSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            use_case=data.get("use_case", "general"),
+            timeout_s=data.get("timeout_s", 10.0),
+        )
+
+
+@dataclass
 class RoutingTableDispatchSettings:
     """N-way dispatch driven by the measured suitability table (M3).
 
@@ -962,6 +990,9 @@ class RoutingSettings:
     idle_sweep: RoutingIdleSweepSettings = field(
         default_factory=RoutingIdleSweepSettings
     )
+    shadow_labeler: RoutingShadowLabelerSettings = field(
+        default_factory=RoutingShadowLabelerSettings
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -977,6 +1008,7 @@ class RoutingSettings:
             "telemetry": self.telemetry.to_dict(),
             "table_dispatch": self.table_dispatch.to_dict(),
             "idle_sweep": self.idle_sweep.to_dict(),
+            "shadow_labeler": self.shadow_labeler.to_dict(),
         }
 
     @classmethod
@@ -1004,6 +1036,9 @@ class RoutingSettings:
                 data.get("table_dispatch", {})
             ),
             idle_sweep=RoutingIdleSweepSettings.from_dict(data.get("idle_sweep", {})),
+            shadow_labeler=RoutingShadowLabelerSettings.from_dict(
+                data.get("shadow_labeler", {})
+            ),
         )
 
 
