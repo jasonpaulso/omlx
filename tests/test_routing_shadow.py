@@ -49,19 +49,32 @@ def fake_proc(stdout: bytes, returncode: int = 0):
     return SimpleNamespace(communicate=communicate, returncode=returncode)
 
 
-class TestClassify:
+def cli_backend(which="/usr/bin/fm"):
+    """Force the CLI path regardless of whether apple-fm-sdk is installed."""
+    return (
+        patch("omlx.routing.shadow._fm", None),
+        patch("omlx.routing.shadow.shutil.which", return_value=which),
+    )
+
+
+class TestClassifyCli:
     @pytest.mark.asyncio
-    async def test_no_fm_binary_returns_none(self):
+    async def test_no_backend_returns_none(self):
         labeler = ShadowLabeler()
-        with patch("omlx.routing.shadow.shutil.which", return_value=None):
+        with (
+            patch("omlx.routing.shadow._fm", None),
+            patch("omlx.routing.shadow.shutil.which", return_value=None),
+        ):
             assert await labeler.classify("some text") is None
 
     @pytest.mark.asyncio
     async def test_valid_label(self):
         labeler = ShadowLabeler()
         out = json.dumps({"label": "MODERATE", "reason": "multi-step"}).encode()
+        fm_none, which = cli_backend()
         with (
-            patch("omlx.routing.shadow.shutil.which", return_value="/usr/bin/fm"),
+            fm_none,
+            which,
             patch(
                 "omlx.routing.shadow.asyncio.create_subprocess_exec",
                 return_value=fake_proc(out),
@@ -69,6 +82,7 @@ class TestClassify:
         ):
             rec = await labeler.classify("write a parser")
         assert rec["provider"] == "apple_fm"
+        assert rec["backend"] == "cli"
         assert rec["label"] == "MODERATE"
         assert rec["reason"] == "multi-step"
         assert rec["ms"] >= 0
@@ -77,8 +91,10 @@ class TestClassify:
     async def test_invalid_label_returns_none(self):
         labeler = ShadowLabeler()
         out = json.dumps({"label": "BANANAS"}).encode()
+        fm_none, which = cli_backend()
         with (
-            patch("omlx.routing.shadow.shutil.which", return_value="/usr/bin/fm"),
+            fm_none,
+            which,
             patch(
                 "omlx.routing.shadow.asyncio.create_subprocess_exec",
                 return_value=fake_proc(out),
@@ -89,8 +105,10 @@ class TestClassify:
     @pytest.mark.asyncio
     async def test_nonzero_exit_returns_none(self):
         labeler = ShadowLabeler()
+        fm_none, which = cli_backend()
         with (
-            patch("omlx.routing.shadow.shutil.which", return_value="/usr/bin/fm"),
+            fm_none,
+            which,
             patch(
                 "omlx.routing.shadow.asyncio.create_subprocess_exec",
                 return_value=fake_proc(b"", returncode=2),
@@ -106,8 +124,10 @@ class TestClassify:
             await asyncio.sleep(10)
 
         proc = SimpleNamespace(communicate=hang, returncode=None)
+        fm_none, which = cli_backend()
         with (
-            patch("omlx.routing.shadow.shutil.which", return_value="/usr/bin/fm"),
+            fm_none,
+            which,
             patch(
                 "omlx.routing.shadow.asyncio.create_subprocess_exec",
                 return_value=proc,
@@ -118,8 +138,45 @@ class TestClassify:
     @pytest.mark.asyncio
     async def test_empty_text_skipped(self):
         labeler = ShadowLabeler()
-        with patch("omlx.routing.shadow.shutil.which", return_value="/usr/bin/fm"):
-            assert await labeler.classify("") is None
+        assert await labeler.classify("") is None
+
+
+class FakeSession:
+    def __init__(self, instructions=None):
+        self.instructions = instructions
+
+    async def respond(self, prompt, json_schema=None, options=None):
+        return SimpleNamespace(value={"label": "SIMPLE", "reason": "short synthesis"})
+
+
+def fake_sdk():
+    return SimpleNamespace(
+        LanguageModelSession=FakeSession,
+        GenerationOptions=lambda **kw: SimpleNamespace(**kw),
+        SamplingMode=SimpleNamespace(greedy=lambda: "greedy"),
+    )
+
+
+class TestClassifySdk:
+    @pytest.mark.asyncio
+    async def test_sdk_preferred_over_cli(self):
+        labeler = ShadowLabeler()
+        with patch("omlx.routing.shadow._fm", fake_sdk()):
+            rec = await labeler.classify("summarize this")
+        assert rec["backend"] == "sdk"
+        assert rec["label"] == "SIMPLE"
+
+    @pytest.mark.asyncio
+    async def test_sdk_error_returns_none(self):
+        class BoomSession(FakeSession):
+            async def respond(self, *a, **kw):
+                raise RuntimeError("rate limited")
+
+        sdk = fake_sdk()
+        sdk.LanguageModelSession = BoomSession
+        labeler = ShadowLabeler()
+        with patch("omlx.routing.shadow._fm", sdk):
+            assert await labeler.classify("x") is None
 
 
 class FakeEngine:

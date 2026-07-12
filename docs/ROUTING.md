@@ -255,10 +255,14 @@ axes): lowest `median_q_time_s`, then lowest `load_s` — per-turn latency
 recurs every request while a load is paid once, and residency makes the
 cold pick sticky for the whole conversation.
 **Apple FM shadow labeler** (`routing.shadow_labeler`, off by default,
-macOS 27+): after each routing decision, an async on-device Foundation
-Models call (`fm respond --greedy` with an enum-constrained schema and
-head-500/tail-300 payload elision) attaches a TRIVIAL/SIMPLE/MODERATE/
-COMPLEX second opinion to the telemetry row (`shadow` field). Never on
+macOS 26+): after each routing decision, an async on-device Foundation
+Models call (greedy, enum-constrained schema, head-500/tail-300 payload
+elision) attaches a TRIVIAL/SIMPLE/MODERATE/COMPLEX second opinion to the
+telemetry row (`shadow` field, with `backend: "sdk"|"cli"`). Prefers the
+`apple-fm-sdk` Python bindings when importable (typed errors; latency
+benchmarked equal to the CLI at ~0.65s/classify), falls back to the `fm`
+CLI; classifies serialize through a lock to stay clear of system-model
+concurrency limits. Never on
 the request path; fail-silent on missing binary, timeout, or refusal;
 labels on fast non-streaming responses may be dropped (row already
 flushed). Purpose: an independent labeled corpus for the M6 outcome loop
