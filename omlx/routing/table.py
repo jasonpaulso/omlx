@@ -19,8 +19,8 @@ Selection order:
 4. Residency tiebreak: among candidates within epsilon of the leader's
    score, prefer one that is already resident (loads cost seconds; a
    meaningfully better cold model still wins). When nothing in the tie
-   group is resident, the cheapest measured load wins — near-tied scores
-   never justify paying a 20 s cold load over a 5 s one.
+   group is resident, the fastest model wins — lowest measured median
+   per-question latency, then lowest load time.
 
 Agentic-override dispatch (choose_override): tool-bearing requests skip
 the profiler, but instead of collapsing onto one configured generalist
@@ -290,12 +290,16 @@ def _pick(
     epsilon: float,
     models: dict[str, dict],
 ) -> str:
-    """Residency-then-load tiebreak within epsilon of the leader.
+    """Residency-then-latency tiebreak within epsilon of the leader.
 
     Best score wins unless a resident model is within epsilon of it (loads
-    cost seconds). When nothing in the tie group is resident, the cheapest
-    measured load wins: a near-tied score never justifies a 20 s cold load
-    over a 5 s one. If no tie-group member has load data, the leader wins.
+    cost seconds). When nothing in the tie group is resident, the fastest
+    model wins — lowest measured median per-question latency, then lowest
+    load time. Per-turn latency recurs on every request while a load is
+    paid once, and residency makes the cold pick sticky for the whole
+    conversation (2026-07-12 run 3: a load-only tiebreak picked a 3.4 s
+    med-q coder over 0.7 s peers and the session's TTFT median went 1.7 s
+    -> 7 s). If no tie-group member has latency data, the leader wins.
     """
     leader_id, leader_score = ranked[0]
     if leader_id in resident_ids:
@@ -308,11 +312,21 @@ def _pick(
             return model_id
         tie_group.append(model_id)
     if len(tie_group) > 1:
-        loads = [
-            (load, mid)
-            for mid in tie_group
-            if (load := _load_cost_s(models.get(mid, {}))) is not None
-        ]
-        if loads:
-            return min(loads)[1]
+        costed = []
+        for order, mid in enumerate(tie_group):
+            entry = models.get(mid, {})
+            medq = _median_latency_s(entry)
+            load = _load_cost_s(entry)
+            if medq is None and load is None:
+                continue
+            costed.append(
+                (
+                    medq if medq is not None else float("inf"),
+                    load if load is not None else float("inf"),
+                    order,
+                    mid,
+                )
+            )
+        if costed:
+            return min(costed)[3]
     return leader_id

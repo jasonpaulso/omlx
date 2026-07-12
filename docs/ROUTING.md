@@ -59,7 +59,7 @@ POST /v1/chat/completions {model: "auto", ...}
           missing modality target logs a warning and falls through)
        3. tools present / user turns > N? → agentic override: table dispatch on
           the measured "agentic" axis (toolcall bench; same health/fit/
-          enable_routing/interactive gates, residency-then-load tiebreak);
+          enable_routing/interactive gates, residency-then-latency tiebreak);
           no agentic scores → default_target/big as before
        4. classify(last user text) via pinned router, greedy, timeout 3s
             any failure → fail_open_target
@@ -133,7 +133,7 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "table_dispatch": {                     // M3 N-way; OFF until a sweep populates the table
     "enabled": false,
     "default_target": null,               // generalist spine; falls back to targets.big
-    "residency_epsilon": 0.02,            // prefer a resident model within this score margin; if none is resident, cheapest measured load_s wins the tie
+    "residency_epsilon": 0.02,            // prefer a resident model within this score margin; if none is resident, the fastest wins the tie (median_q_time_s, then load_s)
     "max_interactive_median_q_time_s": 30.0  // thinking-lane exclusion threshold
   },
   "idle_sweep": {                         // M4.4 passive sweeps; OFF by default
@@ -250,8 +250,10 @@ sweeps (commit `140b69a`). **Routing admin UI** (Global Settings routing panel
 + per-model `enable_routing` gate) landed alongside this doc revision.
 **Agentic-axis override dispatch** (loop-state phase A): tool/turn overrides
 rank the eligible pool on the measured agentic axis instead of collapsing
-onto `default_target`, with a load-cost tiebreak for cold near-ties (all
-axes) — near-tied scores never justify a 20 s cold load over a 5 s one.
+onto `default_target`, with a latency tiebreak for cold near-ties (all
+axes): lowest `median_q_time_s`, then lowest `load_s` — per-turn latency
+recurs every request while a load is paid once, and residency makes the
+cold pick sticky for the whole conversation.
 
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.

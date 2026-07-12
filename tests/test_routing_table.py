@@ -321,8 +321,8 @@ class TestChooseOverride:
         assert c.target == "warm-second"
 
 
-class TestLoadCostTiebreak:
-    """Cold tie group -> cheapest measured load wins (all axes)."""
+class TestLatencyTiebreak:
+    """Cold tie group -> fastest model wins: med-q first, load second."""
 
     def test_cold_tie_prefers_cheapest_load(self):
         # 122B-class edge: 0.003 score lead never justifies a 22s load.
@@ -333,6 +333,26 @@ class TestLoadCostTiebreak:
         c = choose_override(models, set())
         assert c.target == "fast"
 
+    def test_cold_tie_medq_beats_load(self):
+        # Run-3 edge: cheapest load was the slowest decoder; per-turn
+        # latency recurs every request, load is paid once.
+        models = {
+            "slow-coder": entry_with_load(
+                agentic=0.897, load_s=4.8, median_q_time_s=3.4
+            ),
+            "quick": entry_with_load(agentic=0.907, load_s=6.1, median_q_time_s=0.7),
+        }
+        c = choose_override(models, set())
+        assert c.target == "quick"
+
+    def test_medq_ties_fall_to_load(self):
+        models = {
+            "a": entry_with_load(agentic=0.91, load_s=22.5, median_q_time_s=0.7),
+            "b": entry_with_load(agentic=0.90, load_s=6.0, median_q_time_s=0.7),
+        }
+        c = choose_override(models, set())
+        assert c.target == "b"
+
     def test_outside_epsilon_leader_wins_despite_load(self):
         models = {
             "huge": entry_with_load(agentic=0.95, load_s=22.5),
@@ -341,7 +361,7 @@ class TestLoadCostTiebreak:
         c = choose_override(models, set())
         assert c.target == "huge"
 
-    def test_no_load_data_keeps_leader(self):
+    def test_no_latency_data_keeps_leader(self):
         models = {
             "a": entry_with_load(agentic=0.91),
             "b": entry_with_load(agentic=0.90),
@@ -357,7 +377,7 @@ class TestLoadCostTiebreak:
         c = choose_override(models, {"huge"})
         assert c.target == "huge"
 
-    def test_axis_dispatch_also_load_aware(self):
+    def test_axis_dispatch_also_latency_aware(self):
         # The guard lives in the shared pick, not just the override path.
         models = {
             "huge": entry_with_load(categories={"code": 0.91}, load_s=22.5),
