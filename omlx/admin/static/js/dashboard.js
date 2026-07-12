@@ -4202,6 +4202,7 @@
                 cfg.targets.audio = cfg.targets.audio || '';
                 cfg.policy = cfg.policy || {};
                 cfg.policy.agentic_override = cfg.policy.agentic_override || { on_tools: true, max_user_turns: 3 };
+                cfg.classify_window = cfg.classify_window || { enabled: false, max_turns: 6, max_chars: 4000 };
                 cfg.table_dispatch = cfg.table_dispatch || {};
                 cfg.table_dispatch.default_target = cfg.table_dispatch.default_target || '';
                 cfg.telemetry = cfg.telemetry || {};

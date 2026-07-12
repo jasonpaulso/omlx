@@ -61,8 +61,10 @@ POST /v1/chat/completions {model: "auto", ...}
           the measured "agentic" axis (toolcall bench; same health/fit/
           enable_routing/interactive gates, residency-then-latency tiebreak);
           no agentic scores → default_target/big as before
-       4. classify(last user text) via pinned router, greedy, timeout 3s
-            any failure → fail_open_target
+       4. classify via pinned router, greedy, timeout 3s
+            input = last user text, or a bounded multi-turn window when
+            classify_window.enabled (recent user/assistant text, tool
+            payloads excluded); any failure → fail_open_target
        5. table_dispatch on + table has data? → N-way choose(); else binary policy.decide()
        6. request.model rewritten in place; downstream resolve/settings/engine re-read it
        7. x-omlx-route header on both stream + non-stream paths
@@ -116,6 +118,11 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "profiler_kind": "generative",           // "generative" (Supra) | "capability" (M4.5 ModernBERT)
   "capability_threshold": 0.5,             // capability-kind only: sigmoid cutoff for math/code
   "classify_timeout_s": 3.0,
+  "classify_window": {                     // loop-state phase C; OFF = classify last user text only
+    "enabled": false,
+    "max_turns": 6,                        // user/assistant text messages considered, newest first
+    "max_chars": 4000                      // total window budget (each message elided head-500/tail-300)
+  },
   "targets": {
     "small":  "<a fast, cheap chat model>",
     "big":    "<the local frontier / fail-open target>",
@@ -285,8 +292,21 @@ the request path; fail-silent on missing binary, timeout, or refusal;
 labels on fast non-streaming responses may be dropped (row already
 flushed). Purpose: an independent labeled corpus for the M6 outcome loop
 and continuous validation of the in-process profiler. Turns whose last
-user message has no text (tool_result-only agent turns) are skipped —
-known coverage gap, revisit with loop-state context windows.
+user message has no text (tool_result-only agent turns) are skipped
+unless the classify window (below) is enabled, which closes that
+coverage gap; when last-user text exists it is labeled as-is so labels
+stay comparable with the pre-window corpus.
+**Multi-turn classify window** (loop-state phase C,
+`routing.classify_window`, off by default): when enabled, the profiler
+classifies a bounded transcript of recent user/assistant text — newest
+`max_turns` messages within `max_chars`, chronological, `User:`/
+`Assistant:` prefixes, each message elided head-500/tail-300 — instead
+of only the last user message. Tool payloads (`tool_use`/`tool_result`),
+thinking blocks, system prompts, and `role:"tool"` messages never enter
+the window. Follow-ups like "make it faster" and tool_result-only agent
+turns classify on real context; prerequisite for ever relaxing
+`agentic_override.on_tools`. Off = profiler input byte-identical to the
+pre-window behavior.
 **Router admin tab** (loop-state phase D): dedicated dashboard tab with
 the full routing config surface, a live decision feed + window stats fed
 by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a

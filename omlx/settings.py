@@ -835,6 +835,39 @@ class RoutingPolicySettings:
 
 
 @dataclass
+class RoutingClassifyWindowSettings:
+    """Multi-turn classification window (loop-state phase C).
+
+    When enabled, the profiler (and, on text-less turns, the shadow
+    labeler) sees a bounded transcript of recent user/assistant text
+    instead of only the last user message — follow-ups like "make it
+    faster" and tool_result-only agent turns classify on real context.
+    Off by default: the profiler input is byte-identical to the
+    last-user-message behavior until an operator opts in."""
+
+    enabled: bool = False
+    max_turns: int = 6  # user/assistant text messages considered, newest first
+    max_chars: int = 4000  # total window budget in characters
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "max_turns": self.max_turns,
+            "max_chars": self.max_chars,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingClassifyWindowSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            max_turns=data.get("max_turns", 6),
+            max_chars=data.get("max_chars", 4000),
+        )
+
+
+@dataclass
 class RoutingTelemetrySettings:
     """Telemetry logging settings for routing decisions."""
 
@@ -974,6 +1007,9 @@ class RoutingSettings:
     # Sigmoid cutoff for the capability profiler's math/code booleans.
     capability_threshold: float = 0.5
     classify_timeout_s: float = 3.0
+    classify_window: RoutingClassifyWindowSettings = field(
+        default_factory=RoutingClassifyWindowSettings
+    )
     targets: dict[str, str] = field(
         default_factory=lambda: {
             "small": "gpt-oss-20b-OptiQ-4bit",
@@ -1003,6 +1039,7 @@ class RoutingSettings:
             "profiler_kind": self.profiler_kind,
             "capability_threshold": self.capability_threshold,
             "classify_timeout_s": self.classify_timeout_s,
+            "classify_window": self.classify_window.to_dict(),
             "targets": dict(self.targets),
             "policy": self.policy.to_dict(),
             "telemetry": self.telemetry.to_dict(),
@@ -1021,6 +1058,9 @@ class RoutingSettings:
             profiler_kind=data.get("profiler_kind", "generative"),
             capability_threshold=data.get("capability_threshold", 0.5),
             classify_timeout_s=data.get("classify_timeout_s", 3.0),
+            classify_window=RoutingClassifyWindowSettings.from_dict(
+                data.get("classify_window", {})
+            ),
             targets=dict(
                 data.get(
                     "targets",

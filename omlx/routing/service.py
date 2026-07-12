@@ -24,7 +24,7 @@ from typing import Any
 from omlx.routing import table as dispatch_table
 from omlx.routing.policy import decide
 from omlx.routing.profiler import RouterFeatures, make_profiler
-from omlx.routing.shadow import ShadowLabeler
+from omlx.routing.shadow import ShadowLabeler, elide
 from omlx.settings import RoutingSettings
 
 logger = logging.getLogger(__name__)
@@ -76,27 +76,66 @@ def _msg_field(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-def _last_user_content(messages: list) -> str:
-    """Extract the last user message's text, flattening multimodal parts.
+def _message_text(msg: Any) -> str:
+    """Flatten one message's textual content, skipping non-text parts.
 
-    Messages/parts may be plain dicts or pydantic request models (attribute
-    access), depending on the caller.
+    Tool payloads (`tool_use`/`tool_result`), thinking blocks, and media
+    parts are excluded — only `text` parts (or a plain string content)
+    count as classify-able text. Messages/parts may be plain dicts or
+    pydantic request models (attribute access), depending on the caller.
     """
+    content = _msg_field(msg, "content", "")
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            part_type = _msg_field(part, "type")
+            if part_type not in (None, "text"):
+                continue
+            text = _msg_field(part, "text")
+            if text:
+                parts.append(text)
+        return " ".join(parts)
+    return content or ""
+
+
+def _last_user_content(messages: list) -> str:
+    """Extract the last user message's text, flattening multimodal parts."""
     for msg in reversed(messages):
         if _msg_field(msg, "role") == "user":
-            content = _msg_field(msg, "content", "")
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    part_type = _msg_field(part, "type")
-                    if part_type not in (None, "text"):
-                        continue
-                    text = _msg_field(part, "text")
-                    if text:
-                        parts.append(text)
-                return " ".join(parts)
-            return content or ""
+            return _message_text(msg)
     return ""
+
+
+def build_classify_window(messages: list, *, max_turns: int, max_chars: int) -> str:
+    """Bounded multi-turn transcript for classification (phase C).
+
+    Collects user/assistant text newest-first (tool payloads, thinking
+    blocks, and media parts excluded; system prompts and role="tool"
+    messages skipped), elides each message like the shadow labeler does,
+    and stops at `max_turns` entries or `max_chars` total. Rendered
+    chronologically with role prefixes so follow-ups like "make it
+    faster" carry the context they refer to. The newest entry is always
+    included even if it alone exceeds the budget.
+    """
+    max_turns = max(1, max_turns)
+    max_chars = max(1, max_chars)
+    entries: list[str] = []  # newest first
+    total = 0
+    for msg in reversed(messages):
+        role = _msg_field(msg, "role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _message_text(msg).strip()
+        if not text:
+            continue
+        line = f"{'User' if role == 'user' else 'Assistant'}: {elide(text)}"
+        if entries and total + len(line) > max_chars:
+            break
+        entries.append(line)
+        total += len(line) + 1
+        if len(entries) >= max_turns:
+            break
+    return "\n".join(reversed(entries))
 
 
 # Part-type classification for the shape rule. Anthropic-protocol agent
@@ -261,7 +300,7 @@ class RoutingService:
             try:
 
                 async def _classify() -> tuple[RouterFeatures, str]:
-                    text = _last_user_content(messages)
+                    text = self._classify_text(messages)
                     engine = None
                     # The capability profiler owns its own model and ignores
                     # the engine; only the generative profiler needs one from
@@ -315,6 +354,22 @@ class RoutingService:
         )
         self._record_decision(decision, request_id, endpoint, stream, messages)
         return decision
+
+    def _classify_text(self, messages: list) -> str:
+        """Profiler input: multi-turn window when enabled, else last user text.
+
+        Falls back to the last user message if the window comes back empty
+        (e.g. a conversation with no user/assistant text at all), so
+        enabling the window can only add context, never remove it.
+        """
+        w = self.settings.classify_window
+        if w.enabled:
+            text = build_classify_window(
+                messages, max_turns=w.max_turns, max_chars=w.max_chars
+            )
+            if text:
+                return text
+        return _last_user_content(messages)
 
     def _try_table(
         self, features: RouterFeatures | None, override: str | None
@@ -436,6 +491,15 @@ class RoutingService:
         if self._shadow is None:
             return
         text = _last_user_content(messages)
+        if not text and self.settings.classify_window.enabled:
+            # tool_result-only agent turns have no last-user text; the
+            # multi-turn window closes that shadow-label coverage gap.
+            # When the last user text exists it is used as-is so labels
+            # stay comparable with the pre-window corpus.
+            w = self.settings.classify_window
+            text = build_classify_window(
+                messages, max_turns=w.max_turns, max_chars=w.max_chars
+            )
         if not text:
             return
         task = asyncio.create_task(self._shadow_label(request_id, text))
