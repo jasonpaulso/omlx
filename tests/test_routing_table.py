@@ -2,7 +2,7 @@
 """Tests for N-way table dispatch (omlx/routing/table.py)."""
 
 from omlx.routing.profiler import RouterFeatures
-from omlx.routing.table import TableChoice, axis_for, choose
+from omlx.routing.table import TableChoice, axis_for, choose, choose_override
 
 
 def feats(complexity=2, math=False, code=False):
@@ -269,3 +269,100 @@ class TestEnableRoutingGate:
         )
         assert c.target == "coder"
         assert c.disabled == []
+
+
+def entry_with_load(agentic=None, load_s=None, categories=None, **kw):
+    e = entry(categories=categories or ({"agentic": agentic} if agentic else {}), **kw)
+    if load_s is not None:
+        e["evals"].append(
+            {
+                "bench": "toolcall",
+                "baseline": True,
+                "load_s": load_s,
+                "date": "2026-07-10T00:00:00+00:00",
+            }
+        )
+    return e
+
+
+class TestChooseOverride:
+    def test_agentic_leader_wins(self):
+        models = {
+            "toolmaster": entry_with_load(agentic=0.91),
+            "generalist": entry_with_load(agentic=0.75),
+        }
+        c = choose_override(models, set())
+        assert c.target == "toolmaster"
+        assert c.rule == "table:agentic"
+        assert c.candidates[0] == ("toolmaster", 0.91)
+
+    def test_no_agentic_scores_returns_none_target(self):
+        models = {"m": entry(categories={"code": 0.9})}
+        c = choose_override(models, set())
+        assert c.target is None
+        assert c.rule == "table:no_candidates"
+
+    def test_gate_and_health_respected(self):
+        models = {
+            "leader": entry_with_load(agentic=0.95),
+            "runner": entry_with_load(agentic=0.9),
+            "sick": entry_with_load(agentic=0.99, healthy=False),
+        }
+        c = choose_override(models, set(), enabled_ids={"runner"})
+        assert c.target == "runner"
+        assert "leader" in c.disabled
+
+    def test_resident_within_epsilon_beats_cold_leader(self):
+        models = {
+            "cold-leader": entry_with_load(agentic=0.913),
+            "warm-second": entry_with_load(agentic=0.907),
+        }
+        c = choose_override(models, {"warm-second"})
+        assert c.target == "warm-second"
+
+
+class TestLoadCostTiebreak:
+    """Cold tie group -> cheapest measured load wins (all axes)."""
+
+    def test_cold_tie_prefers_cheapest_load(self):
+        # 122B-class edge: 0.003 score lead never justifies a 22s load.
+        models = {
+            "huge": entry_with_load(agentic=0.9133, load_s=22.5),
+            "fast": entry_with_load(agentic=0.9100, load_s=6.0),
+        }
+        c = choose_override(models, set())
+        assert c.target == "fast"
+
+    def test_outside_epsilon_leader_wins_despite_load(self):
+        models = {
+            "huge": entry_with_load(agentic=0.95, load_s=22.5),
+            "fast": entry_with_load(agentic=0.90, load_s=1.0),
+        }
+        c = choose_override(models, set())
+        assert c.target == "huge"
+
+    def test_no_load_data_keeps_leader(self):
+        models = {
+            "a": entry_with_load(agentic=0.91),
+            "b": entry_with_load(agentic=0.90),
+        }
+        c = choose_override(models, set())
+        assert c.target == "a"
+
+    def test_resident_leader_short_circuits(self):
+        models = {
+            "huge": entry_with_load(agentic=0.913, load_s=22.5),
+            "fast": entry_with_load(agentic=0.910, load_s=6.0),
+        }
+        c = choose_override(models, {"huge"})
+        assert c.target == "huge"
+
+    def test_axis_dispatch_also_load_aware(self):
+        # The guard lives in the shared pick, not just the override path.
+        models = {
+            "huge": entry_with_load(categories={"code": 0.91}, load_s=22.5),
+            "fast": entry_with_load(categories={"code": 0.90}, load_s=6.0),
+        }
+        c = choose(feats(code=True), models, set(), escalate_at=4)
+        assert c.target == "fast"
+        assert c.rule == "table:code"

@@ -318,18 +318,38 @@ class RoutingService:
             if not models:
                 return None
             generalist = cfg.default_target or self.settings.targets.get("big")
-            if override is not None:
-                # Agentic overrides route to the generalist spine in N-way
-                # mode, mirroring the binary policy's big-target behavior.
-                if generalist:
-                    return dispatch_table.TableChoice(
-                        generalist, f"override:{override}", []
-                    )
-                return None
             fit_budget_gb = (
                 self._fit_budget_getter() if self._fit_budget_getter else None
             )
             enabled_ids = self._enabled_getter() if self._enabled_getter else None
+            if override is not None:
+                # Agentic overrides dispatch on the measured agentic axis
+                # (toolcall bench) with the shared residency/load tiebreak;
+                # the generalist spine remains the fallback when no agentic
+                # scores exist, mirroring the pre-axis behavior.
+                choice = dispatch_table.choose_override(
+                    models,
+                    self._resident_getter(),
+                    residency_epsilon=cfg.residency_epsilon,
+                    max_interactive_median_q_time_s=(
+                        cfg.max_interactive_median_q_time_s
+                    ),
+                    fit_budget_gb=fit_budget_gb,
+                    enabled_ids=enabled_ids,
+                )
+                if choice.target is not None:
+                    return choice
+                if generalist:
+                    # Historical rule string for the no-agentic-data path so
+                    # telemetry stays comparable across deploys.
+                    return dispatch_table.TableChoice(
+                        generalist,
+                        f"override:{override}",
+                        [],
+                        choice.unfit,
+                        choice.disabled,
+                    )
+                return None
             return dispatch_table.choose(
                 features,
                 models,

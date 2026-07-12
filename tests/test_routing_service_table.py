@@ -161,3 +161,76 @@ async def test_enable_routing_empty_set_is_noop(tmp_path):
     assert d.target == "coder-model"
     assert d.disabled is None
     await svc.close()
+
+
+AGENTIC_MODELS = {
+    "tool-leader": {
+        "role": "chat",
+        "health": {"status": "ok"},
+        "categories": {"agentic": 0.91, "code": 0.7},
+        "evals": [],
+    },
+    "tool-runner": {
+        "role": "chat",
+        "health": {"status": "ok"},
+        "categories": {"agentic": 0.88, "code": 0.9},
+        "evals": [],
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_override_dispatches_on_agentic_axis(tmp_path):
+    svc = make_service(
+        make_settings(tmp_path, default_target="general-model"),
+        AGENTIC_MODELS,
+    )
+    d = await route(svc, has_tools=True)
+    assert d.target == "tool-leader"
+    assert d.rule_fired == "table:agentic"
+    assert d.override == "tools"
+    assert d.candidates[0][0] == "tool-leader"
+    await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_override_agentic_prefers_resident_within_epsilon(tmp_path):
+    models = {
+        "cold-leader": dict(AGENTIC_MODELS["tool-leader"]),
+        "warm-second": {
+            "role": "chat",
+            "health": {"status": "ok"},
+            "categories": {"agentic": 0.90},
+            "evals": [],
+        },
+    }
+    svc = make_service(make_settings(tmp_path), models, resident={"warm-second"})
+    d = await route(svc, has_tools=True)
+    assert d.target == "warm-second"
+    assert d.rule_fired == "table:agentic"
+    await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_turns_override_also_dispatches_agentic(tmp_path):
+    svc = make_service(make_settings(tmp_path), AGENTIC_MODELS)
+    msgs = [{"role": "user", "content": f"turn {i}"} for i in range(4)]
+    d = await route(svc, messages=msgs)
+    assert d.override == "turns"
+    assert d.target == "tool-leader"
+    assert d.rule_fired == "table:agentic"
+    await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_override_agentic_respects_enable_routing_gate(tmp_path):
+    svc = make_service(make_settings(tmp_path), AGENTIC_MODELS)
+    svc.set_table_sources(
+        lambda: AGENTIC_MODELS,
+        lambda: set(),
+        enabled_getter=lambda: {"tool-runner"},
+    )
+    d = await route(svc, has_tools=True)
+    assert d.target == "tool-runner"
+    assert d.disabled == ["tool-leader"]
+    await svc.close()

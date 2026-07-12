@@ -57,7 +57,10 @@ POST /v1/chat/completions {model: "auto", ...}
        2. image/audio parts present? → targets.vision / targets.audio (shape rule,
           precedes everything; tool_use/tool_result/thinking are text-flow, and a
           missing modality target logs a warning and falls through)
-       3. tools present / user turns > N? → generalist/big (agentic override)
+       3. tools present / user turns > N? → agentic override: table dispatch on
+          the measured "agentic" axis (toolcall bench; same health/fit/
+          enable_routing/interactive gates, residency-then-load tiebreak);
+          no agentic scores → default_target/big as before
        4. classify(last user text) via pinned router, greedy, timeout 3s
             any failure → fail_open_target
        5. table_dispatch on + table has data? → N-way choose(); else binary policy.decide()
@@ -93,7 +96,7 @@ Note: the accuracy evaluator already forces `temperature=0`, `presence_penalty=0
 3. **bf16 router weights, never quantized.** (`Supra-Router-51M-oQ8` exists on rosters; do not use it for routing.)
 4. **Parse the full analysis line; policy keys on features, not the router's own `Route:` token** — that baked-in rule is calibrated for edge SLMs and over-escalates for a capable roster. `Route:` is only the fallback when policy config is absent.
 5. **Complexity is primary; math/code are modifiers; domain is telemetry-only.**
-6. **Shape rule → agentic overrides → profiler.** Image/audio parts route to a modality target before anything else (decision #11's layering); tools/multi-turn route to the generalist; only then does semantic classification run. The shape rule keys on explicit part types (image/image_url/document/file → vision, input_audio → audio); agent control-flow blocks (`tool_use`/`tool_result`/`thinking`) and unknown part types fail open to the rest of the chain — treating them as media routed 95% of real agent traffic to the vision model before the 2026-07-12 fix. tool_result *nested* content is scanned too: a screenshot returned by a browser tool still needs a VLM.
+6. **Shape rule → agentic overrides → profiler.** Image/audio parts route to a modality target before anything else (decision #11's layering); tools/multi-turn dispatch on the measured agentic axis (falling back to the generalist spine when no agentic scores exist); only then does semantic classification run. The shape rule keys on explicit part types (image/image_url/document/file → vision, input_audio → audio); agent control-flow blocks (`tool_use`/`tool_result`/`thinking`) and unknown part types fail open to the rest of the chain — treating them as media routed 95% of real agent traffic to the vision model before the 2026-07-12 fix. tool_result *nested* content is scanned too: a screenshot returned by a browser tool still needs a VLM.
 7. **Fail open, always.** Any classify failure (timeout, parse miss, engine gone, store/pool snapshot error) routes to a configured fail-open target. A routing bug must never 5xx a request or strand it on a weak model.
 8. **Opt-in via virtual id; concrete ids bypass.** MarkItDown's virtual-model pattern is the in-repo precedent.
 9. **Decision telemetry from day one, jsonl, first-class.** The labeled dataset is worth more than the router itself.
@@ -130,7 +133,7 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "table_dispatch": {                     // M3 N-way; OFF until a sweep populates the table
     "enabled": false,
     "default_target": null,               // generalist spine; falls back to targets.big
-    "residency_epsilon": 0.02,            // prefer a resident model within this score margin
+    "residency_epsilon": 0.02,            // prefer a resident model within this score margin; if none is resident, cheapest measured load_s wins the tie
     "max_interactive_median_q_time_s": 30.0  // thinking-lane exclusion threshold
   },
   "idle_sweep": {                         // M4.4 passive sweeps; OFF by default
@@ -245,6 +248,10 @@ Done: M1, M2, M3, M4.1, **M4.2** (Anthropic `/v1/messages` hook, commit
 `8e62609`), plus fit-aware dispatch, telemetry orphan-flush, and gap-fill
 sweeps (commit `140b69a`). **Routing admin UI** (Global Settings routing panel
 + per-model `enable_routing` gate) landed alongside this doc revision.
+**Agentic-axis override dispatch** (loop-state phase A): tool/turn overrides
+rank the eligible pool on the measured agentic axis instead of collapsing
+onto `default_target`, with a load-cost tiebreak for cold near-ties (all
+axes) — near-tied scores never justify a 20 s cold load over a 5 s one.
 
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.

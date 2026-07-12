@@ -18,7 +18,15 @@ Selection order:
    complexity band, not by axis specialization.
 4. Residency tiebreak: among candidates within epsilon of the leader's
    score, prefer one that is already resident (loads cost seconds; a
-   meaningfully better cold model still wins).
+   meaningfully better cold model still wins). When nothing in the tie
+   group is resident, the cheapest measured load wins — near-tied scores
+   never justify paying a 20 s cold load over a 5 s one.
+
+Agentic-override dispatch (choose_override): tool-bearing requests skip
+the profiler, but instead of collapsing onto one configured generalist
+they rank the same eligible pool on the measured "agentic" axis, with the
+identical residency/load tiebreak. The configured default_target remains
+the fallback when no agentic scores exist.
 """
 
 from __future__ import annotations
@@ -60,6 +68,23 @@ def _overall_score(entry: dict) -> float | None:
     if not cats:
         return None
     return sum(cats.values()) / len(cats)
+
+
+def _load_cost_s(entry: dict) -> float | None:
+    """Measured load time from the most recent baseline eval record."""
+    best_date = ""
+    load_s: float | None = None
+    for rec in entry.get("evals", []):
+        if not rec.get("baseline"):
+            continue
+        val = rec.get("load_s")
+        if not isinstance(val, (int, float)):
+            continue
+        date = rec.get("date") or ""
+        if date >= best_date:
+            best_date = date
+            load_s = float(val)
+    return load_s
 
 
 def axis_for(features) -> str:
@@ -106,37 +131,12 @@ def choose(
     only filters the ranked pool; the caller's `default_target` and
     fail-open path are explicitly-named and bypass it.
     """
-    unfit_ids: set[str] = set()
-    disabled_ids: set[str] = set()
-    gate = bool(enabled_ids)  # empty/None -> gate inert (opt-in not configured)
-
-    def interactive(model_id: str) -> bool:
-        lat = _median_latency_s(models.get(model_id, {}))
-        return lat is None or lat <= max_interactive_median_q_time_s
-
-    def fits(model_id: str, entry: dict) -> bool:
-        if fit_budget_gb is None:
-            return True
-        size_gb = entry.get("size_gb")
-        if size_gb is None or size_gb <= fit_budget_gb:
-            return True
-        unfit_ids.add(model_id)
-        return False
-
-    def enabled(model_id: str) -> bool:
-        if not gate or model_id in enabled_ids:  # type: ignore[operator]
-            return True
-        disabled_ids.add(model_id)
-        return False
-
-    def eligible(model_id: str, entry: dict) -> bool:
-        return (
-            entry.get("role") == "chat"
-            and entry.get("health", {}).get("status") == "ok"
-            and fits(model_id, entry)
-            and interactive(model_id)
-            and enabled(model_id)
-        )
+    elig = _Eligibility(
+        models,
+        max_interactive_median_q_time_s=max_interactive_median_q_time_s,
+        fit_budget_gb=fit_budget_gb,
+        enabled_ids=enabled_ids,
+    )
 
     # Escalation tier: complexity band beats axis specialization.
     complexity = getattr(features, "complexity", None) if features else None
@@ -144,17 +144,17 @@ def choose(
         scored = [
             (mid, s)
             for mid, entry in models.items()
-            if eligible(mid, entry) and (s := _overall_score(entry)) is not None
+            if elig.eligible(mid, entry) and (s := _overall_score(entry)) is not None
         ]
         scored.sort(key=lambda t: t[1], reverse=True)
         if scored:
-            target = _residency_pick(scored, resident_ids, residency_epsilon)
+            target = _pick(scored, resident_ids, residency_epsilon, models)
             return TableChoice(
                 target,
                 f"table:escalate>={escalate_at}",
                 scored[:5],
-                sorted(unfit_ids),
-                sorted(disabled_ids),
+                sorted(elig.unfit),
+                sorted(elig.disabled),
             )
         # fall through to axis dispatch if no overall scores exist
 
@@ -162,15 +162,19 @@ def choose(
     ranked = [
         (mid, score)
         for mid, entry in models.items()
-        if eligible(mid, entry)
+        if elig.eligible(mid, entry)
         and (score := (entry.get("categories") or {}).get(axis)) is not None
     ]
     ranked.sort(key=lambda t: t[1], reverse=True)
 
     if ranked:
-        target = _residency_pick(ranked, resident_ids, residency_epsilon)
+        target = _pick(ranked, resident_ids, residency_epsilon, models)
         return TableChoice(
-            target, f"table:{axis}", ranked[:5], sorted(unfit_ids), sorted(disabled_ids)
+            target,
+            f"table:{axis}",
+            ranked[:5],
+            sorted(elig.unfit),
+            sorted(elig.disabled),
         )
 
     if default_target:
@@ -178,27 +182,137 @@ def choose(
             default_target,
             "table:generalist",
             [],
-            sorted(unfit_ids),
-            sorted(disabled_ids),
+            sorted(elig.unfit),
+            sorted(elig.disabled),
         )
 
     return TableChoice(
-        None, "table:no_candidates", [], sorted(unfit_ids), sorted(disabled_ids)
+        None, "table:no_candidates", [], sorted(elig.unfit), sorted(elig.disabled)
     )
 
 
-def _residency_pick(
+def choose_override(
+    models: dict[str, dict],
+    resident_ids: set[str],
+    *,
+    residency_epsilon: float = 0.02,
+    max_interactive_median_q_time_s: float = 30.0,
+    fit_budget_gb: float | None = None,
+    enabled_ids: set[str] | None = None,
+) -> TableChoice:
+    """Dispatch an agentic-override request on the measured agentic axis.
+
+    Same eligibility gates and residency/load tiebreak as choose(); ranks
+    on categories["agentic"] (the toolcall bench). No agentic-scored
+    candidates -> TableChoice(None, ...) and the caller falls back to the
+    configured generalist exactly as before this axis existed. Never raises.
+    """
+    elig = _Eligibility(
+        models,
+        max_interactive_median_q_time_s=max_interactive_median_q_time_s,
+        fit_budget_gb=fit_budget_gb,
+        enabled_ids=enabled_ids,
+    )
+    ranked = [
+        (mid, score)
+        for mid, entry in models.items()
+        if elig.eligible(mid, entry)
+        and (score := (entry.get("categories") or {}).get("agentic")) is not None
+    ]
+    ranked.sort(key=lambda t: t[1], reverse=True)
+
+    if ranked:
+        target = _pick(ranked, resident_ids, residency_epsilon, models)
+        return TableChoice(
+            target,
+            "table:agentic",
+            ranked[:5],
+            sorted(elig.unfit),
+            sorted(elig.disabled),
+        )
+    return TableChoice(
+        None, "table:no_candidates", [], sorted(elig.unfit), sorted(elig.disabled)
+    )
+
+
+class _Eligibility:
+    """Shared candidate gates; records why models were excluded."""
+
+    def __init__(
+        self,
+        models: dict[str, dict],
+        *,
+        max_interactive_median_q_time_s: float,
+        fit_budget_gb: float | None,
+        enabled_ids: set[str] | None,
+    ) -> None:
+        self._models = models
+        self._max_latency = max_interactive_median_q_time_s
+        self._fit_budget_gb = fit_budget_gb
+        self._enabled_ids = enabled_ids
+        # empty/None -> gate inert (opt-in not configured)
+        self._gate = bool(enabled_ids)
+        self.unfit: set[str] = set()
+        self.disabled: set[str] = set()
+
+    def eligible(self, model_id: str, entry: dict) -> bool:
+        return (
+            entry.get("role") == "chat"
+            and entry.get("health", {}).get("status") == "ok"
+            and self._fits(model_id, entry)
+            and self._interactive(model_id)
+            and self._enabled(model_id)
+        )
+
+    def _interactive(self, model_id: str) -> bool:
+        lat = _median_latency_s(self._models.get(model_id, {}))
+        return lat is None or lat <= self._max_latency
+
+    def _fits(self, model_id: str, entry: dict) -> bool:
+        if self._fit_budget_gb is None:
+            return True
+        size_gb = entry.get("size_gb")
+        if size_gb is None or size_gb <= self._fit_budget_gb:
+            return True
+        self.unfit.add(model_id)
+        return False
+
+    def _enabled(self, model_id: str) -> bool:
+        if not self._gate or model_id in self._enabled_ids:  # type: ignore[operator]
+            return True
+        self.disabled.add(model_id)
+        return False
+
+
+def _pick(
     ranked: list[tuple[str, float]],
     resident_ids: set[str],
     epsilon: float,
+    models: dict[str, dict],
 ) -> str:
-    """Best score wins unless a resident model is within epsilon of it."""
+    """Residency-then-load tiebreak within epsilon of the leader.
+
+    Best score wins unless a resident model is within epsilon of it (loads
+    cost seconds). When nothing in the tie group is resident, the cheapest
+    measured load wins: a near-tied score never justifies a 20 s cold load
+    over a 5 s one. If no tie-group member has load data, the leader wins.
+    """
     leader_id, leader_score = ranked[0]
     if leader_id in resident_ids:
         return leader_id
+    tie_group = [leader_id]
     for model_id, score in ranked[1:]:
         if leader_score - score > epsilon:
             break
         if model_id in resident_ids:
             return model_id
+        tie_group.append(model_id)
+    if len(tie_group) > 1:
+        loads = [
+            (load, mid)
+            for mid in tie_group
+            if (load := _load_cost_s(models.get(mid, {}))) is not None
+        ]
+        if loads:
+            return min(loads)[1]
     return leader_id
