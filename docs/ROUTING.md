@@ -307,6 +307,18 @@ the window. Follow-ups like "make it faster" and tool_result-only agent
 turns classify on real context; prerequisite for ever relaxing
 `agentic_override.on_tools`. Off = profiler input byte-identical to the
 pre-window behavior.
+Measured 2026-07-12 (probe runs 5–6): with the override still on, the
+window is a pure win (routing unchanged, shadow coverage 10/34 → 34/34).
+But actually relaxing `on_tools` with the window driving was a decisive
+negative: once code enters the transcript, *every* turn — even "are you
+sure?" — classifies coding≈0.98 → complexity 5, so agent traffic
+collapsed onto the escalate-axis leader (slow interactively; TTFT p90
+52s vs 5.6s) with zero small-tier recovery. Lesson: **the window helps
+the axis but poisons the tier** — the complexity proxy rates the
+conversation, not the turn. Do not relax `on_tools` until (a) tier is
+computed from the newest user text while axis/domain keep the window,
+and (b) axis choice carries an interactive-latency term (an axis winner
+never enters the med-q tiebreak).
 **Router admin tab** (loop-state phase D): dedicated dashboard tab with
 the full routing config surface, a live decision feed + window stats fed
 by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a
