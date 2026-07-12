@@ -146,7 +146,12 @@ class FakeSession:
         self.instructions = instructions
 
     async def respond(self, prompt, json_schema=None, options=None):
-        return SimpleNamespace(value={"label": "SIMPLE", "reason": "short synthesis"})
+        # Real SDK (0.2.1): GeneratedContent.value is a METHOD, not a
+        # property — the fake mirrors that (it silently broke extraction
+        # once already).
+        return SimpleNamespace(
+            value=lambda: {"label": "SIMPLE", "reason": "short synthesis"}
+        )
 
 
 def fake_sdk():

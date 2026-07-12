@@ -177,8 +177,15 @@ class ShadowLabeler:
             json_schema=_SCHEMA,
             options=_fm.GenerationOptions(sampling=_fm.SamplingMode.greedy()),
         )
+        # GeneratedContent.value is a method in apple-fm-sdk 0.2.1; keep a
+        # callable check so a future property change also works.
         value = getattr(out, "value", out)
-        return value if isinstance(value, dict) else None
+        if callable(value):
+            value = value()
+        if not isinstance(value, dict):
+            logger.debug("shadow labeler: unexpected sdk payload %r", type(value))
+            return None
+        return value
 
     async def _classify_cli(self, text: str) -> dict | None:
         proc = await asyncio.create_subprocess_exec(
