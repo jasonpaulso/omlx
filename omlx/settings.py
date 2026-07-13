@@ -992,6 +992,39 @@ class RoutingIdleSweepSettings:
 
 
 @dataclass
+class RoutingImplicitFeedbackSettings:
+    """Implicit outcome proxies harvested from the multi-turn stream (M6.1).
+
+    When enabled, each routed request is inspected for a *free* satisfaction
+    signal about the previous turn's route: a tool_result error, a user
+    correction ("no, that's wrong"), a rephrase ("try again"), or approval
+    ("thanks, that works"). The signal is written as a normal ``kind:
+    "feedback"`` row (``source: "implicit"``) attributed to the prior
+    decision via a content-hash join — no conversation identity required,
+    since the full history rides in every request. Off by default;
+    high-precision/low-recall by design (a false positive poisons the corpus
+    worse than a miss). Never on the hot path beyond cheap string matching."""
+
+    enabled: bool = False
+    approval: bool = True  # also emit positive (score=1.0) approval signals
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "approval": self.approval,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RoutingImplicitFeedbackSettings:
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            approval=data.get("approval", True),
+        )
+
+
+@dataclass
 class RoutingSettings:
     """Semantic routing settings: classify requests to a virtual model id
     and rewrite them to a concrete target model. Defaults OFF."""
@@ -1029,6 +1062,9 @@ class RoutingSettings:
     shadow_labeler: RoutingShadowLabelerSettings = field(
         default_factory=RoutingShadowLabelerSettings
     )
+    implicit_feedback: RoutingImplicitFeedbackSettings = field(
+        default_factory=RoutingImplicitFeedbackSettings
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -1046,6 +1082,7 @@ class RoutingSettings:
             "table_dispatch": self.table_dispatch.to_dict(),
             "idle_sweep": self.idle_sweep.to_dict(),
             "shadow_labeler": self.shadow_labeler.to_dict(),
+            "implicit_feedback": self.implicit_feedback.to_dict(),
         }
 
     @classmethod
@@ -1078,6 +1115,9 @@ class RoutingSettings:
             idle_sweep=RoutingIdleSweepSettings.from_dict(data.get("idle_sweep", {})),
             shadow_labeler=RoutingShadowLabelerSettings.from_dict(
                 data.get("shadow_labeler", {})
+            ),
+            implicit_feedback=RoutingImplicitFeedbackSettings.from_dict(
+                data.get("implicit_feedback", {})
             ),
         )
 

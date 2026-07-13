@@ -11,10 +11,12 @@ settings.policy.fail_open_target.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -200,6 +202,165 @@ def _detect_modality(messages: list) -> str | None:
     return "audio" if saw_audio else None
 
 
+@dataclass
+class ImplicitSignal:
+    """An implicit outcome proxy derived from the multi-turn stream (M6.1)."""
+
+    kind: str  # "tool_error" | "negation" | "rephrase" | "approval"
+    score: float  # 0.0 (bad) .. 1.0 (good)
+    marker: str  # the cue that matched, for auditing
+
+
+# High-precision / low-recall cues. A false positive poisons the outcome
+# corpus worse than a miss, so a cue must *begin* the newest user message
+# (after a light filler strip) — a substring test is not safe here
+# ("incorrect" appears in "correct the incorrect assumption"; "No thanks"
+# is a decline, not approval). Meta-feedback about the prior answer almost
+# always leads the turn. Order below is precedence: dissatisfaction wins
+# over approval ("no, thanks anyway" is negative).
+_NEGATION_CUES = (
+    "no,",
+    "no.",
+    "nope",
+    "that's wrong",
+    "thats wrong",
+    "that is wrong",
+    "that's not",
+    "thats not",
+    "that is not",
+    "wrong answer",
+    "incorrect",
+    "you didn't",
+    "you did not",
+    "that doesn't work",
+    "that does not work",
+    "doesn't work",
+    "does not work",
+    "still broken",
+    "still failing",
+    "still doesn't",
+    "still not",
+    "not what i",
+)
+_REPHRASE_CUES = (
+    "try again",
+    "again please",
+    "please try again",
+    "do it again",
+    "redo",
+    "that didn't help",
+    "that didnt help",
+)
+_APPROVAL_CUES = (
+    "thanks",
+    "thank you",
+    "perfect",
+    "that works",
+    "works now",
+    "that's correct",
+    "thats correct",
+    "that's right",
+    "thats right",
+    "looks good",
+    "lgtm",
+    "awesome",
+)
+# Leading span of the newest user message searched for a cue.
+_IMPLICIT_LEAD_CHARS = 80
+# Conversational preambles stripped before the leading-cue test so
+# "ok, that's wrong" and "hmm, try again" still register.
+_IMPLICIT_FILLER_RE = re.compile(
+    r"^(?:ok(?:ay)?|hmm+|wait|actually|well|so|um+|uh+|hey|yeah|right)[\s,.:;-]+"
+)
+
+
+def _lead_matches(lead: str, cues: tuple[str, ...]) -> str | None:
+    """Return the first cue that the leading text begins with, else None."""
+    for cue in cues:
+        if lead.startswith(cue):
+            return cue
+    return None
+
+
+def _last_assistant_index(messages: list) -> int:
+    """Index of the last assistant message, or -1 if there is none."""
+    for i in range(len(messages) - 1, -1, -1):
+        if _msg_field(messages[i], "role") == "assistant":
+            return i
+    return -1
+
+
+def _trailing_tool_error(messages: list, after: int) -> bool:
+    """True if any message after `after` carries an error tool_result.
+
+    An agent turn returns tool output as ``tool_result`` blocks; an
+    ``is_error`` flag (Anthropic) — or an OpenAI ``role: "tool"`` message
+    whose text opens with an error marker — means the route's tool call
+    failed, the strongest free dissatisfaction signal there is.
+    """
+    for msg in messages[after + 1 :]:
+        content = _msg_field(msg, "content")
+        parts = content if isinstance(content, list) else [msg]
+        for part in parts:
+            if _msg_field(part, "type") == "tool_result" and _msg_field(
+                part, "is_error"
+            ):
+                return True
+    return False
+
+
+def detect_implicit_signal(messages: list) -> ImplicitSignal | None:
+    """Derive a free outcome proxy for the previous turn's route (M6.1).
+
+    Pure and cheap (string matching only). Returns None unless the
+    conversation has a prior assistant turn to judge and the newest turn
+    carries a distinctive cue. High precision by design — see the cue notes.
+    """
+    a = _last_assistant_index(messages)
+    if a < 0:
+        return None  # nothing prior to attribute a signal to
+
+    if _trailing_tool_error(messages, a):
+        return ImplicitSignal("tool_error", 0.0, "tool_result.is_error")
+
+    # Newest user text after the last assistant turn. A pure detector
+    # returns None on malformed content rather than raising.
+    try:
+        text = ""
+        for msg in messages[a + 1 :]:
+            if _msg_field(msg, "role") == "user":
+                text = _message_text(msg)
+        lead = str(text).strip().lower()[:_IMPLICIT_LEAD_CHARS]
+    except Exception:  # noqa: BLE001
+        return None
+    lead = _IMPLICIT_FILLER_RE.sub("", lead)
+    if not lead:
+        return None
+
+    cue = _lead_matches(lead, _NEGATION_CUES)
+    if cue:
+        return ImplicitSignal("negation", 0.0, cue)
+    cue = _lead_matches(lead, _REPHRASE_CUES)
+    if cue:
+        return ImplicitSignal("rephrase", 0.2, cue)
+    cue = _lead_matches(lead, _APPROVAL_CUES)
+    if cue:
+        return ImplicitSignal("approval", 1.0, cue)
+    return None
+
+
+def _user_text_hash(text: str) -> str | None:
+    """Stable content-addressed key for a user message (M6.1 join key).
+
+    Normalizes whitespace/case so the same message hashes identically when
+    it re-appears in the next turn's history. None for empty text.
+    """
+    norm = re.sub(r"\s+", " ", text).strip().lower()
+    if not norm:
+        return None
+    return hashlib.sha1(norm[:2000].encode("utf-8")).hexdigest()
+
+
 class RoutingService:
     """Classifies "auto" requests and rewrites them to a concrete target."""
 
@@ -215,6 +376,11 @@ class RoutingService:
         self._model_fallback_getter: FallbackGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=_RECENT_MAX)
+        # Implicit feedback (M6.1, off by default): bounded content-hash index
+        # mapping each decision's last-user-text hash -> request_id, so the
+        # next turn can attribute a free outcome proxy to the prior decision
+        # without any persistent conversation identity.
+        self._decision_by_userhash: OrderedDict[str, str] = OrderedDict()
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer_task: asyncio.Task | None = None
         # Apple FM shadow labeler (off by default): async second-opinion
@@ -654,6 +820,66 @@ class RoutingService:
         except Exception as e:  # noqa: BLE001 - ingest must never raise
             logger.warning("routing record_feedback failed: %s", e)
 
+    def _maybe_implicit_feedback(self, messages: list) -> None:
+        """Harvest a free outcome proxy for the prior turn's route (M6.1).
+
+        Detects an implicit signal (tool error / correction / rephrase /
+        approval) in the incoming request and, if the prior user turn hashes
+        to a recent decision, records it as ``source:"implicit"`` feedback on
+        that decision — reusing the M6.0 append-only feedback plumbing. Fully
+        best-effort and exception-free; never on the request-serving path.
+        """
+        if not self.settings.implicit_feedback.enabled:
+            return
+        try:
+            sig = detect_implicit_signal(messages)
+            if sig is None:
+                return
+            if sig.kind == "approval" and not self.settings.implicit_feedback.approval:
+                return
+            # The prior decision was made on the last user message that
+            # preceded the last assistant turn; hash it to find its row.
+            a = _last_assistant_index(messages)
+            prior_text = ""
+            for msg in messages[:a]:
+                if _msg_field(msg, "role") == "user":
+                    prior_text = _message_text(msg)
+            h = _user_text_hash(prior_text)
+            if h is None:
+                return
+            prior_id = self._decision_by_userhash.get(h)
+            if prior_id is None:
+                return
+            self.record_feedback(
+                prior_id,
+                score=sig.score,
+                label=sig.kind,
+                tags=["implicit", sig.marker],
+                source="implicit",
+            )
+            # One implicit signal per decision: drop the consumed key so a
+            # retried/duplicated identical turn can't re-emit against it.
+            self._decision_by_userhash.pop(h, None)
+        except Exception as e:  # noqa: BLE001 - must never raise
+            logger.warning("routing implicit feedback failed: %s", e)
+
+    def _index_user_hash(self, request_id: str, messages: list) -> None:
+        """Record this turn's last-user-text hash for the next turn to join.
+
+        Exception-safe: runs on every routed request when implicit feedback
+        is on, so a malformed message must never break the routing contract.
+        """
+        try:
+            h = _user_text_hash(_last_user_content(messages))
+        except Exception:  # noqa: BLE001 - must never break routing
+            return
+        if h is None:
+            return
+        self._decision_by_userhash[h] = request_id
+        self._decision_by_userhash.move_to_end(h)
+        while len(self._decision_by_userhash) > _RECENT_MAX:
+            self._decision_by_userhash.popitem(last=False)
+
     def _maybe_shadow_label(self, request_id: str, messages: list) -> None:
         """Fire-and-forget Apple FM second opinion for a pending row."""
         if self._shadow is None:
@@ -749,6 +975,11 @@ class RoutingService:
         self._ensure_writer()
         self._flush_orphans()
         if messages is not None:
+            if self.settings.implicit_feedback.enabled:
+                # Attribute a prior-turn implicit signal before indexing this
+                # turn, so this request's own hash can't shadow the lookup.
+                self._maybe_implicit_feedback(messages)
+                self._index_user_hash(request_id, messages)
             self._maybe_shadow_label(request_id, messages)
         row: dict[str, Any] = {
             "ts": _now_iso(),

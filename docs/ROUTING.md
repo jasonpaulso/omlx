@@ -327,6 +327,37 @@ the decision feed's expandable detail view shows `raw_analysis`,
 `candidates_considered`, `unfit`, `disabled`, and the shadow reason per
 row. See "Router admin tab" under Configuration.
 
+## M6 — outcome loop
+
+**M6.0 — `/v1/feedback` ingest.** POST `/v1/feedback` (`score` ∈ [0,1],
+`label`, `tags`, `comment`, `source`) records out-of-band feedback as an
+append-only `kind:"feedback"` telemetry row keyed by request_id; routed
+responses echo the join key in an `x-omlx-request-id` header (both
+protocols, stream + JSON). The decision row is never mutated — feedback
+joins to it offline via `join_feedback` (and live in the ring buffer when
+the decision is still recent). Off-path and exception-free: ingest never
+5xx's on a store hiccup.
+
+**M6.1 — implicit outcome proxies** (`routing.implicit_feedback`, off by
+default). Every request already carries the full conversation history, so
+when a new turn arrives the previous turn's exchange rides along with it —
+a *free* satisfaction signal about the route we just made, with **no
+persistent conversation identity required** (which is what blocks phase B).
+`detect_implicit_signal` reads the tail of the incoming messages and emits
+one of: `tool_error` (a `tool_result` with `is_error` after an assistant
+turn → score 0.0, the strongest signal), `negation` ("no, that's wrong" →
+0.0), `rephrase` ("try again" → 0.2), or `approval` ("thanks, that works"
+→ 1.0; suppressible via `implicit_feedback.approval`). Cues are
+high-precision / low-recall by design and matched only against the leading
+span of the newest user message — a false positive poisons the corpus
+worse than a miss. Attribution uses a bounded content-hash index
+(`hash(last_user_text) → request_id`): the new turn's *prior* user message
+hashes to the decision that routed it, so the signal lands as a normal
+`source:"implicit"` feedback row on the right decision — reusing all of the
+M6.0 plumbing. Best-effort and off the request-serving path (cheap string
+matching only). Purpose: feed M6.2's read-only misroute-rate measurement
+without asking any client to send feedback.
+
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.
 

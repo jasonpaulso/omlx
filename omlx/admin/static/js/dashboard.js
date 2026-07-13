@@ -4241,6 +4241,7 @@
                 cfg.table_dispatch.default_target = cfg.table_dispatch.default_target || '';
                 cfg.telemetry = cfg.telemetry || {};
                 cfg.shadow_labeler = cfg.shadow_labeler || {};
+                cfg.implicit_feedback = cfg.implicit_feedback || { enabled: false, approval: true };
                 cfg.idle_sweep = cfg.idle_sweep || {};
                 cfg.idle_sweep.benchmarks = cfg.idle_sweep.benchmarks || {};
                 return cfg;
