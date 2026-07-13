@@ -182,66 +182,9 @@
                         </div>
                     </div>
 
-                    <!-- Decision Feed -->
-                    <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
-                        <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
-                            <i data-lucide="table-2" class="w-4 h-4 text-neutral-500"></i>
-                            <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Decisions</span>
-                        </div>
-                        <div x-show="routerDecisions().length === 0" class="px-6 py-10 text-center text-sm text-neutral-400">No routing decisions in this window.</div>
-                        <div x-show="routerDecisions().length > 0" class="overflow-x-auto">
-                            <table class="w-full text-xs">
-                                <thead>
-                                    <tr class="border-b border-neutral-200 bg-neutral-50">
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Time</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Rule</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Target</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Override</th>
-                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Classify ms</th>
-                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">TTFT ms</th>
-                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Cache %</th>
-                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Tokens</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Shadow</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Finish</th>
-                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Feedback</th>
-                                    </tr>
-                                </thead>
-                                <template x-for="(row, idx) in routerDecisions()" :key="idx">
-                                    <tbody>
-                                        <tr class="border-b border-neutral-100 hover:bg-neutral-50 transition-colors cursor-pointer"
-                                            :class="!row.outcome ? 'italic text-neutral-400' : ''"
-                                            @click="toggleRouterRow(idx)">
-                                            <td class="px-3 py-2 font-mono" x-text="routerRowTime(row.ts)"></td>
-                                            <td class="px-3 py-2 font-mono" x-text="row.rule_fired"></td>
-                                            <td class="px-3 py-2 font-mono" x-text="row.target"></td>
-                                            <td class="px-3 py-2 font-mono" x-text="row.override || '—'"></td>
-                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.classify_ms != null ? row.classify_ms.toFixed(0) : '—'"></td>
-                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.ttft_ms != null ? row.outcome.ttft_ms.toFixed(0) : '—'"></td>
-                                            <td class="px-3 py-2 text-right tabular-nums" x-text="routerCachePct(row) != null ? routerCachePct(row).toFixed(0) + '%' : '—'"></td>
-                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.completion_tokens ?? '—'"></td>
-                                            <td class="px-3 py-2" x-text="row.shadow?.label || '—'"></td>
-                                            <td class="px-3 py-2" x-text="row.outcome?.finish_reason || (row.outcome ? '—' : 'in flight')"></td>
-                                            <td class="px-3 py-2">
-                                                <span x-show="routerFeedbackChip(row)"
-                                                      class="px-1.5 py-0.5 text-[10px] font-medium rounded bg-neutral-100 text-neutral-600 border border-neutral-200 whitespace-nowrap"
-                                                      x-text="routerFeedbackChip(row)?.label"
-                                                      :title="routerFeedbackChip(row)?.title"></span>
-                                            </td>
-                                        </tr>
-                                        <tr x-show="routerExpandedRow === idx" x-cloak class="border-b border-neutral-100 bg-neutral-50/60">
-                                            <td colspan="11" class="px-4 py-3">
-                                                <pre class="text-[11px] whitespace-pre-wrap break-all bg-neutral-900 text-green-400 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(row, null, 2)"></pre>
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </template>
-                            </table>
-                        </div>
-                    </div>
-
                     <!-- Configuration -->
                     <template x-if="routerConfig">
-                        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
                             <div class="flex items-center justify-between px-6 py-4 bg-neutral-100 border-b border-neutral-200">
                                 <div class="flex items-center gap-3">
                                     <i data-lucide="sliders-horizontal" class="w-4 h-4 text-neutral-500"></i>
@@ -560,5 +503,62 @@
                             </div>
                         </div>
                     </template>
+
+                    <!-- Decision Feed -->
+                    <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                        <div class="flex items-center gap-3 px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                            <i data-lucide="table-2" class="w-4 h-4 text-neutral-500"></i>
+                            <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Decisions</span>
+                        </div>
+                        <div x-show="routerDecisions().length === 0" class="px-6 py-10 text-center text-sm text-neutral-400">No routing decisions in this window.</div>
+                        <div x-show="routerDecisions().length > 0" class="overflow-x-auto">
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="border-b border-neutral-200 bg-neutral-50">
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Time</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Rule</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Target</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Override</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Classify ms</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">TTFT ms</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Cache %</th>
+                                        <th class="text-right px-3 py-2 font-semibold text-neutral-600">Tokens</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Shadow</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Finish</th>
+                                        <th class="text-left px-3 py-2 font-semibold text-neutral-600">Feedback</th>
+                                    </tr>
+                                </thead>
+                                <template x-for="(row, idx) in routerDecisions()" :key="idx">
+                                    <tbody>
+                                        <tr class="border-b border-neutral-100 hover:bg-neutral-50 transition-colors cursor-pointer"
+                                            :class="!row.outcome ? 'italic text-neutral-400' : ''"
+                                            @click="toggleRouterRow(idx)">
+                                            <td class="px-3 py-2 font-mono" x-text="routerRowTime(row.ts)"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.rule_fired"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.target"></td>
+                                            <td class="px-3 py-2 font-mono" x-text="row.override || '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.classify_ms != null ? row.classify_ms.toFixed(0) : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.ttft_ms != null ? row.outcome.ttft_ms.toFixed(0) : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="routerCachePct(row) != null ? routerCachePct(row).toFixed(0) + '%' : '—'"></td>
+                                            <td class="px-3 py-2 text-right tabular-nums" x-text="row.outcome?.completion_tokens ?? '—'"></td>
+                                            <td class="px-3 py-2" x-text="row.shadow?.label || '—'"></td>
+                                            <td class="px-3 py-2" x-text="row.outcome?.finish_reason || (row.outcome ? '—' : 'in flight')"></td>
+                                            <td class="px-3 py-2">
+                                                <span x-show="routerFeedbackChip(row)"
+                                                      class="px-1.5 py-0.5 text-[10px] font-medium rounded bg-neutral-100 text-neutral-600 border border-neutral-200 whitespace-nowrap"
+                                                      x-text="routerFeedbackChip(row)?.label"
+                                                      :title="routerFeedbackChip(row)?.title"></span>
+                                            </td>
+                                        </tr>
+                                        <tr x-show="routerExpandedRow === idx" x-cloak class="border-b border-neutral-100 bg-neutral-50/60">
+                                            <td colspan="11" class="px-4 py-3">
+                                                <pre class="text-[11px] whitespace-pre-wrap break-all bg-neutral-900 text-green-400 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(row, null, 2)"></pre>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </template>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
