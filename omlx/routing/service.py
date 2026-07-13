@@ -34,6 +34,11 @@ ModelsGetter = Callable[[], dict[str, dict]]
 ResidentGetter = Callable[[], set[str]]
 FitBudgetGetter = Callable[[], float | None]
 EnabledGetter = Callable[[], set[str]]
+# Target-health sources (roster validity + the global default-model fallback
+# flag). Both optional: absent -> validation is skipped and routing behaves
+# exactly as before (fail-open).
+ValidGetter = Callable[[str], bool]
+FallbackGetter = Callable[[], bool]
 
 # Orphan flush (P1-D): a 507/disconnected request never calls
 # record_outcome, so its pending row would otherwise sit in memory until
@@ -59,14 +64,21 @@ class RouteDecision:
     candidates: list[tuple[str, float]] | None = None  # table dispatch only
     unfit: list[str] | None = None  # table dispatch only: excluded, can't fit
     disabled: list[str] | None = None  # table dispatch only: routing opt-out
+    # Original target id that did not resolve on the live roster. Set whether
+    # the request was substituted to a valid target or passed through to the
+    # server's default-or-404 contract; surfaced in telemetry and the header.
+    invalid_target: str | None = None
 
     @property
     def header_value(self) -> str:
         """Value for the x-omlx-route response header."""
-        return (
+        base = (
             f"{self.target}; rule={self.rule_fired}; "
             f"classify_ms={self.classify_ms:.0f}"
         )
+        if self.invalid_target:
+            base += f"; invalid_target={self.invalid_target}"
+        return base
 
 
 def _msg_field(obj: Any, name: str, default: Any = None) -> Any:
@@ -199,6 +211,8 @@ class RoutingService:
         self._resident_getter: ResidentGetter | None = None
         self._fit_budget_getter: FitBudgetGetter | None = None
         self._enabled_getter: EnabledGetter | None = None
+        self._valid_getter: ValidGetter | None = None
+        self._model_fallback_getter: FallbackGetter | None = None
         self._pending: dict[str, dict[str, Any]] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=_RECENT_MAX)
         self._queue: asyncio.Queue[dict[str, Any] | None] | None = None
@@ -247,6 +261,104 @@ class RoutingService:
         self._fit_budget_getter = fit_budget_getter
         self._enabled_getter = enabled_getter
 
+    def set_validity_sources(
+        self,
+        valid_getter: ValidGetter,
+        model_fallback_getter: FallbackGetter,
+    ) -> None:
+        """Wire roster-validity + default-model-fallback snapshots.
+
+        `valid_getter(model_id)` returns True if the id resolves to a model on
+        the live roster (alias-aware, non-loading). `model_fallback_getter()`
+        returns the global ``model.model_fallback`` flag — the single switch
+        that permits serving a model other than the one requested. Both are
+        cheap sync callables. When unset (or when either raises), target
+        validation is skipped and routing behaves exactly as before: a stale
+        target passes through to the server's model-load contract.
+        """
+        self._valid_getter = valid_getter
+        self._model_fallback_getter = model_fallback_getter
+
+    def _target_resolves(self, model_id: str | None) -> bool:
+        """True if `model_id` resolves on the live roster.
+
+        Fail-open: with no validity source wired (or if the check raises),
+        treat the target as valid so validation can never itself break routing.
+        """
+        if not model_id or self._valid_getter is None:
+            return True
+        try:
+            return bool(self._valid_getter(model_id))
+        except Exception:  # noqa: BLE001 - validation must never break routing
+            return True
+
+    def _fallback_enabled(self) -> bool:
+        """Global ``model.model_fallback`` flag (False when unwired/erroring)."""
+        if self._model_fallback_getter is None:
+            return False
+        try:
+            return bool(self._model_fallback_getter())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _finalize_target(
+        self, proposed: str, *, substitute: bool = True
+    ) -> tuple[str, str | None]:
+        """Validate a proposed target; substitute a valid one or pass through.
+
+        Returns ``(target, invalid_target)``. ``invalid_target`` is None when
+        ``proposed`` resolves on the roster. When it does not:
+
+        - if ``substitute`` and ``model_fallback`` is on, swap in the first
+          valid configured routing target (default_target, big, small, vision)
+          and return ``(substitute, proposed)``;
+        - otherwise return ``(proposed, proposed)`` unchanged, so the server's
+          model-load contract (default-model-or-404, per model_fallback)
+          applies downstream.
+
+        Never raises. ``substitute=False`` (modality path) validates and records
+        but never swaps: a text generalist cannot see media, so a stale vision
+        target must fall through rather than silently downgrade.
+        """
+        if self._target_resolves(proposed):
+            return proposed, None
+        if substitute and self._fallback_enabled():
+            t = self.settings.targets
+            for cand in (
+                self.settings.table_dispatch.default_target,
+                t.get("big"),
+                t.get("small"),
+                t.get("vision"),
+            ):
+                if cand and cand != proposed and self._target_resolves(cand):
+                    return cand, proposed
+        return proposed, proposed
+
+    def validate_targets(self) -> dict[str, dict[str, Any]]:
+        """Roster health of every configured routing target.
+
+        Returns ``{slot: {"id": model_id|None, "resolves": bool|None}}`` for
+        the small/big/vision/default_target/fail_open_target slots. ``resolves``
+        is None when the slot is unset. Cheap (set membership) and safe to call
+        at startup and on every admin Router-tab fetch.
+        """
+        t = self.settings.targets
+        fo_key = self.settings.policy.fail_open_target
+        slots = {
+            "small": t.get("small"),
+            "big": t.get("big"),
+            "vision": t.get("vision"),
+            "default_target": self.settings.table_dispatch.default_target,
+            "fail_open_target": (t.get(fo_key, fo_key) if fo_key else None),
+        }
+        return {
+            name: {
+                "id": mid,
+                "resolves": (None if not mid else self._target_resolves(mid)),
+            }
+            for name, mid in slots.items()
+        }
+
     async def route_chat_request(
         self,
         *,
@@ -268,13 +380,17 @@ class RoutingService:
         if modality is not None:
             modality_target = self.settings.targets.get(modality)
             if modality_target:
+                final_target, invalid = self._finalize_target(
+                    modality_target, substitute=False
+                )
                 decision = RouteDecision(
-                    target=modality_target,
+                    target=final_target,
                     rule_fired=f"shape:{modality}",
                     override=None,
                     features=None,
                     raw_analysis=None,
                     classify_ms=(time.perf_counter() - start) * 1000,
+                    invalid_target=invalid,
                 )
                 self._record_decision(decision, request_id, endpoint, stream, messages)
                 return decision
@@ -328,8 +444,9 @@ class RoutingService:
         # binary pair when the table has data; binary remains the fallback.
         table_choice = self._try_table(features, override)
         if table_choice is not None and table_choice.target is not None:
+            final_target, invalid = self._finalize_target(table_choice.target)
             decision = RouteDecision(
-                target=table_choice.target,
+                target=final_target,
                 rule_fired=table_choice.rule,
                 override=override,
                 features=features,
@@ -338,19 +455,23 @@ class RoutingService:
                 candidates=table_choice.candidates or None,
                 unfit=table_choice.unfit or None,
                 disabled=table_choice.disabled or None,
+                invalid_target=invalid,
             )
             self._record_decision(decision, request_id, endpoint, stream, messages)
             return decision
 
         target_key, rule_fired = decide(features, override, cfg)
         classify_ms = (time.perf_counter() - start) * 1000
+        proposed = self.settings.targets.get(target_key, target_key)
+        final_target, invalid = self._finalize_target(proposed)
         decision = RouteDecision(
-            target=self.settings.targets.get(target_key, target_key),
+            target=final_target,
             rule_fired=rule_fired,
             override=override,
             features=features,
             raw_analysis=raw_analysis,
             classify_ms=classify_ms,
+            invalid_target=invalid,
         )
         self._record_decision(decision, request_id, endpoint, stream, messages)
         return decision
@@ -441,13 +562,16 @@ class RoutingService:
         self, reason: str, override: str | None, start: float
     ) -> RouteDecision:
         target_key = self.settings.policy.fail_open_target
+        proposed = self.settings.targets.get(target_key, target_key)
+        final_target, invalid = self._finalize_target(proposed)
         return RouteDecision(
-            target=self.settings.targets.get(target_key, target_key),
+            target=final_target,
             rule_fired=f"fail_open:{reason}",
             override=override,
             features=None,
             raw_analysis=None,
             classify_ms=(time.perf_counter() - start) * 1000,
+            invalid_target=invalid,
         )
 
     def record_outcome(
@@ -587,6 +711,7 @@ class RoutingService:
             "features": asdict(decision.features) if decision.features else None,
             "rule_fired": decision.rule_fired,
             "target": decision.target,
+            "invalid_target": decision.invalid_target,
             "classify_ms": round(decision.classify_ms, 1),
             "candidates_considered": (
                 [[m, round(s, 4)] for m, s in decision.candidates]

@@ -6151,11 +6151,16 @@ async def get_routing_activity(
         decisions = service.recent_decisions(limit)
         pending = service.pending_count
         shadow = service.shadow_status()
+        try:
+            target_health = service.validate_targets()
+        except Exception:
+            target_health = {}
     else:
         path = Path(routing.telemetry.path).expanduser()
         decisions = read_telemetry_tail(path, limit)
         pending = 0
         shadow = {"enabled": routing.shadow_labeler.enabled, "backend": None}
+        target_health = {}
 
     return {
         "service_active": service is not None,
@@ -6163,6 +6168,7 @@ async def get_routing_activity(
         "decisions": decisions,
         "pending_count": pending,
         "shadow": shadow,
+        "target_health": target_health,
     }
 
 

@@ -296,21 +296,33 @@
                             <div class="divide-y divide-neutral-100">
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <label class="text-sm text-neutral-700">Small</label>
-                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.small"
-                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                    <div class="flex flex-col sm:items-end gap-1 w-full sm:w-64">
+                                        <input type="text" list="router-target-models" x-model="routerConfig.targets.small"
+                                               class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
+                                        <span x-show="targetHealth.small?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
+                                        <span x-show="targetHealth.small?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                    </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <label class="text-sm text-neutral-700">Big</label>
-                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.big"
-                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                    <div class="flex flex-col sm:items-end gap-1 w-full sm:w-64">
+                                        <input type="text" list="router-target-models" x-model="routerConfig.targets.big"
+                                               class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
+                                        <span x-show="targetHealth.big?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
+                                        <span x-show="targetHealth.big?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                    </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <div>
                                         <label class="text-sm text-neutral-700">Vision</label>
                                         <p class="text-xs text-neutral-400 mt-0.5">Leave blank to leave unset.</p>
                                     </div>
-                                    <input type="text" list="router-target-models" x-model="routerConfig.targets.vision"
-                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                    <div class="flex flex-col sm:items-end gap-1 w-full sm:w-64">
+                                        <input type="text" list="router-target-models" x-model="routerConfig.targets.vision"
+                                               class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
+                                        <span x-show="targetHealth.vision?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
+                                        <span x-show="targetHealth.vision?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                    </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <div>
@@ -342,8 +354,12 @@
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <label class="text-sm text-neutral-700">Fail-open target</label>
-                                    <input type="text" list="router-target-models" x-model="routerConfig.policy.fail_open_target"
-                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                    <div class="flex flex-col sm:items-end gap-1 w-full sm:w-64">
+                                        <input type="text" list="router-target-models" x-model="routerConfig.policy.fail_open_target"
+                                               class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
+                                        <span x-show="targetHealth.fail_open_target?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
+                                        <span x-show="targetHealth.fail_open_target?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                    </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <div>
@@ -411,8 +427,12 @@
                                         <label class="text-sm text-neutral-700">Default target</label>
                                         <p class="text-xs text-neutral-400 mt-0.5">Leave blank to fall back to the big target.</p>
                                     </div>
-                                    <input type="text" list="router-target-models" x-model="routerConfig.table_dispatch.default_target"
-                                           class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-64 font-mono text-xs">
+                                    <div class="flex flex-col sm:items-end gap-1 w-full sm:w-64">
+                                        <input type="text" list="router-target-models" x-model="routerConfig.table_dispatch.default_target"
+                                               class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
+                                        <span x-show="targetHealth.default_target?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
+                                        <span x-show="targetHealth.default_target?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                    </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <label class="text-sm text-neutral-700">Residency epsilon</label>

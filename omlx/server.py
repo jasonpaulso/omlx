@@ -467,6 +467,39 @@ async def lifespan(app: FastAPI):
             _fit_budget_gb,
             _enabled_model_ids,
         )
+
+        def _is_valid_target(model_id: str) -> bool:
+            # A target is valid iff it resolves (alias-aware, non-loading) to a
+            # model on the live roster. Pool absent -> can't check -> True so
+            # validation stays fail-open and never breaks routing.
+            pool = _server_state.engine_pool
+            if pool is None or not model_id:
+                return True
+            resolved = pool.resolve_model_id(model_id, _server_state.settings_manager)
+            return resolved in set(pool.get_model_ids())
+
+        def _model_fallback_enabled() -> bool:
+            gs = _server_state.global_settings
+            return bool(gs and gs.model.model_fallback)
+
+        service.set_validity_sources(_is_valid_target, _model_fallback_enabled)
+        # Loud at startup: a routing target whose model left the roster (e.g. a
+        # requantize renamed the weights) is otherwise invisible until the rare
+        # fallback path fires. Surface it now; the admin Router tab keeps it live.
+        try:
+            _health = service.validate_targets()
+            _bad = {
+                name: h["id"] for name, h in _health.items() if h["resolves"] is False
+            }
+            if _bad:
+                logger.warning(
+                    "Routing: %d target(s) do not resolve on the roster: %s; "
+                    "requests hitting these fall back per model.model_fallback",
+                    len(_bad),
+                    ", ".join(f"{n}={mid!r}" for n, mid in _bad.items()),
+                )
+        except Exception as e:  # pragma: no cover - health check is best-effort
+            logger.debug("Routing target health check skipped: %s", e)
         _server_state.routing_service = service
         if getattr(routing_settings, "profiler_kind", "generative") == "capability":
             # The capability profiler owns its own ModernBERT classifier

@@ -32,6 +32,15 @@ class _FakeRoutingService:
     def shadow_status(self):
         return {"enabled": True, "backend": "sdk"}
 
+    def validate_targets(self):
+        return {
+            "small": {"id": "model-a", "resolves": True},
+            "big": {"id": "model-b", "resolves": False},
+            "vision": {"id": None, "resolves": None},
+            "default_target": {"id": None, "resolves": None},
+            "fail_open_target": {"id": None, "resolves": None},
+        }
+
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
@@ -64,6 +73,7 @@ class TestActivity:
         assert body["shadow"] == {"enabled": False, "backend": None}
         assert [d["request_id"] for d in body["decisions"]] == ["from-file"]
         assert body["config"] == gs.routing.to_dict()
+        assert body["target_health"] == {}
 
     def test_active_service_serves_buffer_and_status(self, harness):
         client, _gs, state = harness
@@ -77,6 +87,14 @@ class TestActivity:
         assert body["shadow"] == {"enabled": True, "backend": "sdk"}
         assert body["decisions"] == svc.rows
         assert svc.last_limit == 25
+        assert set(body["target_health"].keys()) == {
+            "small",
+            "big",
+            "vision",
+            "default_target",
+            "fail_open_target",
+        }
+        assert body["target_health"]["small"] == {"id": "model-a", "resolves": True}
 
     def test_limit_clamped(self, harness):
         client, _gs, state = harness

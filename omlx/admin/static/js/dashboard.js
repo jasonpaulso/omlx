@@ -296,6 +296,7 @@
 
             // Router tab state (backend: omlx/routing/*)
             routerData: { service_active: false, config: null, decisions: [], pending_count: 0, shadow: { enabled: false, backend: null } },
+            targetHealth: {},            // per-slot roster validity from the last activity fetch
             routerConfig: null,          // dedicated form-bound copy, deep-copied once from the fetched config
             routerConfigInitialized: false,
             routerLoading: false,
@@ -4057,6 +4058,7 @@
                     if (response.ok) {
                         const data = await response.json();
                         this.routerData = data;
+                        this.targetHealth = data.target_health || {};
                         // Deep-copy into a dedicated form object once, so periodic
                         // refreshes of the decision feed never clobber in-progress edits.
                         if (!this.routerConfigInitialized) {
