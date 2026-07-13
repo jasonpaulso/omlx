@@ -183,6 +183,41 @@ def test_validate_targets_fail_open_target_resolves_through_targets_map(tmp_path
     assert report["fail_open_target"] == {"id": "big-model", "resolves": True}
 
 
+# --- tokenizer_target() ----------------------------------------------------
+
+
+def test_tokenizer_target_resolves_through_targets_map(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.targets = {"small": "small-model", "big": "big-model"}
+    settings.policy.fail_open_target = "big"
+    service = RoutingService(settings)
+    service.set_validity_sources(
+        valid_getter_for({"small-model", "big-model"}), lambda: True
+    )
+
+    assert service.tokenizer_target() == "big-model"
+
+
+def test_tokenizer_target_substitutes_stale_fail_open_slot(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.targets = {"small": "small-model", "big": "stale-big-model"}
+    settings.policy.fail_open_target = "big"
+    service = RoutingService(settings)
+    service.set_validity_sources(valid_getter_for({"small-model"}), lambda: True)
+
+    assert service.tokenizer_target() == "small-model"
+
+
+def test_tokenizer_target_passthrough_when_fallback_off(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.targets = {"small": "small-model", "big": "stale-big-model"}
+    settings.policy.fail_open_target = "big"
+    service = RoutingService(settings)
+    service.set_validity_sources(valid_getter_for({"small-model"}), lambda: False)
+
+    assert service.tokenizer_target() == "stale-big-model"
+
+
 # --- end-to-end: modality no-downgrade guarantee --------------------------
 
 

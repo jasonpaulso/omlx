@@ -5871,6 +5871,17 @@ async def count_anthropic_tokens(
             detail="Server is busy with oQ quantization. Please try again after quantization completes.",
         )
 
+    # Semantic routing: the virtual model id has no tokenizer of its own,
+    # and counting is not routing (no decision recorded). Stand in the
+    # fail-open target's tokenizer so agent clients that count tokens
+    # against their configured model (e.g. Claude Code) don't 404 on it.
+    routing_service = _server_state.routing_service
+    if (
+        isinstance(routing_service, RoutingService)
+        and request.model == routing_service.settings.virtual_model_id
+    ):
+        request.model = routing_service.tokenizer_target()
+
     lease = _LLMEngineLease()
     try:
         engine = await get_engine_for_model(request.model, lease=lease)

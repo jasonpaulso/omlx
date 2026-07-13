@@ -500,6 +500,19 @@ class RoutingService:
                     return cand, proposed
         return proposed, proposed
 
+    def tokenizer_target(self) -> str:
+        """Concrete model id whose tokenizer stands in for the virtual id.
+
+        Token-counting endpoints can't classify — a count is not a route,
+        so no decision is recorded — but must resolve *some* tokenizer for
+        the virtual model id. Mirrors fail-open: the fail_open_target slot,
+        validated/substituted like any routed target. Never raises.
+        """
+        target_key = self.settings.policy.fail_open_target
+        proposed = self.settings.targets.get(target_key, target_key)
+        final_target, _ = self._finalize_target(proposed)
+        return final_target
+
     def validate_targets(self) -> dict[str, dict[str, Any]]:
         """Roster health of every configured routing target.
 

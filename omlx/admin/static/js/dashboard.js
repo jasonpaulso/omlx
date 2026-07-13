@@ -2431,6 +2431,16 @@
                 return this.models.filter(m => m.model_type === 'llm' || m.model_type === 'vlm' || !m.model_type);
             },
 
+            // Claude Code tier options: real chat models plus the routing
+            // virtual model ("auto") when semantic routing is enabled.
+            get claudeTierModels() {
+                const routing = this.globalSettings.routing;
+                if (routing?.enabled && routing.virtual_model_id) {
+                    return [{ id: routing.virtual_model_id, model_type: 'llm' }, ...this.llmModels];
+                }
+                return this.llmModels;
+            },
+
             shellQuote(value) {
                 const s = String(value ?? '');
                 if (!s) return "''";
