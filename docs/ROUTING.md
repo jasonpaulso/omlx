@@ -318,7 +318,7 @@ the axis but poisons the tier** — the complexity proxy rates the
 conversation, not the turn. Do not relax `on_tools` until (a) tier is
 computed from the newest user text while axis/domain keep the window,
 and (b) axis choice carries an interactive-latency term (an axis winner
-never enters the med-q tiebreak).
+never enters the med-q tiebreak) — (b) is now specced as **M8** below.
 **Router admin tab** (loop-state phase D): dedicated dashboard tab with
 the full routing config surface, a live decision feed + window stats fed
 by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a
@@ -507,6 +507,80 @@ clearly-escalating turn and confirm the switch goes through.
 **Estimated size.** ~100 lines in `service.py` (index + `_apply_sticky`),
 a settings dataclass, an admin chip, tests. No store or schema changes —
 the `sticky` field is additive on the decision row.
+
+## M8 — TTFT-aware agentic dispatch (prefill-throughput term) — SPEC, not implemented
+
+Specced 2026-07-13. This is the "axis choice carries an interactive-latency
+term" precondition from the classify-window lesson, promoted to its own
+milestone by a live incident: Claude Code on `auto` (local box,
+2026-07-13) routed `override:tools` → the agentic-axis leader
+(gemma-4-31B), which passed every existing latency check — and then took
+~60s to prefill CC's ~23.6k-token system prompt. The user aborted before
+first token, twice. Routing chose a model that is interactive on the
+bench and not interactive under an agent prompt.
+
+**Why the existing gate can't catch this.** `median_q_time_s` is measured
+on suitability-bench questions — short prompts, decode-dominated. It has
+no prompt-length dimension, so it cannot rise for a model that decodes
+fast but prefills slowly at depth. (The qMLX write-up's "throughput lie"
+applied to our own signal: any latency number that stays flat as the
+prompt grows cannot predict agent TTFT.) Agent traffic is exactly where
+20k+-token prompts live, so the agentic axis is where the blindness costs
+the most.
+
+**Part 1 — measure prefill throughput per model (sweep side).** A
+dedicated prefill probe, *not* derived from eval questions: time prefill
+of **salted-unique prompts** (prefix caching must not fake the number —
+same hygiene as `bench_qmlx.py`) at fixed depths, e.g. **2k / 8k / 24k
+tokens**, phase-split so decode never pollutes the measurement (generate
+1 token; the timing window is prefill only). Store per **model**, not per
+bench — new optional field on the suitability-store model record:
+
+    "prefill": {"2048": tps, "8192": tps, "24576": tps, "measured_at": ...}
+
+Runs as part of a suitability sweep (and is eligible for M4.4 passive
+idle sweeps); a probe is one load + three short prefills, far cheaper
+than a bench. Per-host like everything else in the table — "tables don't
+travel" applies doubly here, prefill speed is pure hardware.
+
+**Part 2 — estimate TTFT at dispatch (request side).** Routing already
+holds the messages, so prompt size is free: `est_tokens ≈ total_chars/4`
+(precision is irrelevant — the gate distinguishes 2k from 20k, not 5%).
+For each candidate:
+
+    est_ttft_s = (load_s if not resident else 0)
+               + est_tokens / prefill_tps(nearest measured depth ≥ est_tokens,
+                                          else largest; linear is fine)
+
+**Part 3 — gate with a non-emptying fallback.** New config
+`table_dispatch.max_interactive_ttft_s` (default ~20s, off/None to
+disable). Applied in `_Eligibility` beside the med-q gate for axis and
+override dispatch. Fail-open shape: no prefill data → the gate passes
+(exactly like the med-q gate's `lat is None`). **The gate must never
+empty the pool**: if every otherwise-eligible candidate fails it, pick
+the lowest-`est_ttft_s` candidate instead of falling to nothing — a slow
+answer beats a 507 or a silent collapse to the generalist that may be
+slower still. Telemetry: candidates excluded by the gate land in a new
+`slow_ttft` list on the decision row (mirrors `unfit`/`disabled`), so
+the admin decision feed can show why a leader was skipped.
+
+**Composition.** M8 fixes turn one; M7 stickiness protects turns 2+ (a
+held incumbent with a warm prefix pays only the delta, so `est_ttft`
+deliberately applies to fresh decisions, not sticky-held ones); the
+abort-drops-prefill follow-up (open hypothesis from the same incident)
+stops retries from paying full price twice. All three trace to the same
+cost model: prefill at depth is the dominant interactive cost on this
+hardware.
+
+**Non-goals.** No tokenizer-exact prompt counts at dispatch; no per-turn
+prefill re-measurement (the probe is sweep-time); no decode-rate term
+(med-q already proxies decode); no cross-host table sharing.
+
+**Verification.** Unit: depth selection/interpolation, gate fail-open on
+missing data, non-emptying fallback, `slow_ttft` telemetry. Live: on the
+local box, replay the CC scenario — `auto` + tools + a ~23k-token prompt
+must dispatch away from a slow-prefill leader (or hold it only if
+nothing faster exists), with the skip visible in the decision feed.
 
 ## M5 — dashboard polish
 
