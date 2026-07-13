@@ -697,6 +697,13 @@ from .api.mcp_routes import set_mcp_manager_getter
 set_mcp_manager_getter(get_mcp_manager)
 app.include_router(mcp_router, dependencies=[Depends(verify_api_key)])
 
+# Include routing feedback route (M6.0 outcome-loop ingest).
+from .api.feedback_routes import router as feedback_router
+from .api.feedback_routes import set_routing_service_getter as _set_feedback_getter
+
+_set_feedback_getter(lambda: _server_state.routing_service)
+app.include_router(feedback_router, dependencies=[Depends(verify_api_key)])
+
 # Include audio routes only when mlx-audio is installed.
 # audio_routes.py itself only imports fastapi/stdlib at module level, so it
 # would always import successfully — we need an explicit mlx-audio check.
@@ -3781,6 +3788,8 @@ async def create_chat_completion(
                 sse_headers["Warning"] = response_format_warning
             if route_decision is not None:
                 sse_headers["x-omlx-route"] = route_decision.header_value
+                if routing_request_id:
+                    sse_headers["x-omlx-request-id"] = routing_request_id
             return StreamingResponse(
                 _release_after_stream(
                     _with_sse_keepalive(
@@ -3930,6 +3939,8 @@ async def create_chat_completion(
         if route_decision is not None:
             json_headers = dict(json_headers or {})
             json_headers["x-omlx-route"] = route_decision.header_value
+            if routing_request_id:
+                json_headers["x-omlx-request-id"] = routing_request_id
         return StreamingResponse(
             _release_after_stream(
                 _with_json_keepalive(http_request, _build_chat_completion()),
@@ -5715,6 +5726,8 @@ async def create_anthropic_message(
             sse_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
             if route_decision is not None:
                 sse_headers["x-omlx-route"] = route_decision.header_value
+                if routing_request_id:
+                    sse_headers["x-omlx-request-id"] = routing_request_id
             return StreamingResponse(
                 _release_after_stream(
                     _with_sse_keepalive(
@@ -5823,6 +5836,8 @@ async def create_anthropic_message(
         json_headers = None
         if route_decision is not None:
             json_headers = {"x-omlx-route": route_decision.header_value}
+            if routing_request_id:
+                json_headers["x-omlx-request-id"] = routing_request_id
         return StreamingResponse(
             _release_after_stream(
                 _with_json_keepalive(http_request, _build_anthropic_message()),

@@ -610,6 +610,50 @@ class RoutingService:
         except Exception as e:  # noqa: BLE001 - must never raise
             logger.warning("routing record_outcome failed: %s", e)
 
+    def record_feedback(
+        self,
+        request_id: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        tags: list[str] | None = None,
+        comment: str | None = None,
+        source: str = "client",
+    ) -> None:
+        """Attach out-of-band feedback to a prior routing decision (M6.0).
+
+        Feedback arrives after the decision row has already flushed, so it is
+        written as its own append-only record (``kind: "feedback"``) keyed by
+        request_id and joined offline; the decision row is never mutated. When
+        the referenced decision is still in the recent ring, the feedback is
+        also attached there so the admin Router tab reflects it live.
+
+        Sync and exception-free: an ingest endpoint must never 5xx on a store
+        hiccup. No-op when telemetry is disabled (no corpus to append to).
+        """
+        if not self.settings.telemetry.enabled:
+            return
+        try:
+            self._ensure_writer()
+            row: dict[str, Any] = {
+                "kind": "feedback",
+                "ts": _now_iso(),
+                "request_id": request_id,
+                "score": score,
+                "label": label,
+                "tags": tags or None,
+                "comment": comment,
+                "source": source,
+            }
+            self._enqueue(row)
+            # Best-effort live attach: newest matching decision in the ring.
+            for entry in reversed(self._recent):
+                if entry.get("request_id") == request_id and "kind" not in entry:
+                    entry.setdefault("feedback", []).append(row)
+                    break
+        except Exception as e:  # noqa: BLE001 - ingest must never raise
+            logger.warning("routing record_feedback failed: %s", e)
+
     def _maybe_shadow_label(self, request_id: str, messages: list) -> None:
         """Fire-and-forget Apple FM second opinion for a pending row."""
         if self._shadow is None:
@@ -667,6 +711,11 @@ class RoutingService:
             seen = {r.get("request_id") for r in rows}
             path = Path(self.settings.telemetry.path).expanduser()
             for row in read_telemetry_tail(path, limit):
+                # Feedback rows are their own records, not decisions to display;
+                # they join to decisions offline (join_feedback). Live feedback
+                # is already attached to ring entries by record_feedback.
+                if row.get("kind") == "feedback":
+                    continue
                 if row.get("request_id") in seen:
                     continue
                 rows.append(row)
@@ -771,6 +820,29 @@ class RoutingService:
             except OSError as e:
                 logger.warning("routing telemetry write failed: %s", e)
             self._queue.task_done()
+
+
+def join_feedback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach feedback rows to their decision rows by request_id (M6.0/M6.2).
+
+    Given a mixed list of decision and ``kind:"feedback"`` rows (e.g. from
+    read_telemetry_tail over the whole file), returns the decision rows with a
+    ``feedback`` list populated from any matching feedback records. Feedback
+    with no matching decision in the window is dropped (it joins in a wider
+    read). Pure; the offline corpus join that M6.2 consumes.
+    """
+    feedback_by_id: dict[str | None, list[dict[str, Any]]] = {}
+    decisions: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("kind") == "feedback":
+            feedback_by_id.setdefault(row.get("request_id"), []).append(row)
+        else:
+            decisions.append(row)
+    for d in decisions:
+        fb = feedback_by_id.get(d.get("request_id"))
+        if fb:
+            d["feedback"] = fb
+    return decisions
 
 
 def read_telemetry_tail(path: Path, limit: int) -> list[dict[str, Any]]:

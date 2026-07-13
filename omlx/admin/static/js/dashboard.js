@@ -4197,6 +4197,38 @@
                 return isNaN(d) ? iso : d.toLocaleTimeString('en-US', { hour12: false });
             },
 
+            // Chip for a recent-decision row's feedback list (M6.0 ingest).
+            // null when the row carries no feedback.
+            routerFeedbackChip(row) {
+                const fb = row.feedback;
+                if (!fb || !fb.length) return null;
+                const latest = fb[fb.length - 1];
+                const goodLabels = ['good', 'accepted', 'resolved'];
+                const badLabels = ['bad', 'rejected', 'failed'];
+                let emoji = '➖';
+                let text = '';
+                if (latest.score != null) {
+                    emoji = latest.score >= 0.5 ? '👍' : '👎';
+                    text = latest.score.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+                } else if (latest.label != null) {
+                    const label = String(latest.label).toLowerCase();
+                    if (goodLabels.includes(label)) emoji = '👍';
+                    else if (badLabels.includes(label)) emoji = '👎';
+                    text = latest.label;
+                } else if (latest.tags && latest.tags.length) {
+                    text = latest.tags.join(', ');
+                }
+                const count = fb.length > 1 ? ` (×${fb.length})` : '';
+                const parts = fb
+                    .map(f => f.comment || (f.tags && f.tags.length ? f.tags.join(', ') : null))
+                    .filter(Boolean);
+                return {
+                    emoji,
+                    label: `${emoji} ${text}${count}`.trim(),
+                    title: parts.length ? parts.join(' | ') : `${fb.length} feedback entr${fb.length === 1 ? 'y' : 'ies'}`,
+                };
+            },
+
             // Normalize nullable string fields to '' so text inputs bind cleanly.
             _normalizeRouterConfig(cfg) {
                 cfg.targets = cfg.targets || {};
