@@ -360,6 +360,50 @@ without asking any client to send feedback. M6.2's outcome data also
 gates **M7 — conversation stickiness** (specced below): its held-vs-fresh
 segmentation is how we'll know whether holding a route ever hurts quality.
 
+**M6.2 — misroute measurement (read-only).** A *misroute* is a decision
+whose routed target demonstrably hurt the user: a worse answer than a
+roster sibling would have given (under-route), or the same answer at
+needless latency (over-route). No single telemetry field proves that, so
+M6.2 triangulates three planes, each reported under its own evidentiary
+weight — never blended into one opaque score:
+
+1. **Direct — joined feedback.** `join_feedback` over the full
+   `routing_decisions.jsonl`; a decision is *negative* if its minimum
+   joined score < 0.5. Negative rate per `rule_fired` and per `target`,
+   compared against the corpus baseline. This is the only plane that
+   measures misrouting itself; it is sparse until implicit feedback
+   accrues, and that sparseness is reported (joined-n), not hidden.
+2. **Proxy — shadow tier disagreement.** Shadow label → expected
+   complexity (TRIVIAL→1, SIMPLE→2, MODERATE→3, COMPLEX→5); signed gap =
+   profiler `complexity` − expected; |gap| ≥ 2 counts as disagreement,
+   split into *over* (router rated harder — latency waste risk) and
+   *under* (router rated easier — quality risk). This is a
+   classification-quality proxy, not direct misroute evidence: the
+   labeler rates the request, and override paths pick targets without
+   consulting complexity at all. Reported with the full label×complexity
+   matrix so the directionality is inspectable.
+3. **Cost — latency paid on over-routes.** Median `outcome.ttft_ms` and
+   `gen_ms` on shadow-TRIVIAL rows vs the corpus medians: what the
+   escalation habit costs where a small model would have done.
+
+Segmentation: by `rule_fired`, `target`, `endpoint`, and — once M7
+lands — `sticky.held`; absent fields are tolerated so the report runs on
+any corpus vintage. Surfaces: pure `misroute_report(rows)` in
+`omlx/routing/misroute.py` (+ `python -m omlx.routing.misroute [path]`
+for on-box runs), a read-only `GET /admin/api/routing/misroute` that
+reads the full jsonl, and a Misroute panel in the Router admin tab.
+Nothing in M6.2 changes routing behavior.
+
+**Pre-registered M6.3 gate** (written before the first full-corpus run;
+do not tune these after seeing the numbers): M6.3 — closed-loop
+suitability adjustment, a one-way door — is justified only if, with
+≥ 50 feedback-joined decisions, (a) some target or rule segment shows a
+negative rate ≥ 2× the corpus baseline with ≥ 10 negative rows in the
+segment, **or** (b) under-route disagreement covers ≥ 15% of shadowed
+rows *and* those rows' joined feedback corroborates (negative rate above
+baseline). Anything less: keep accruing and re-run. Meeting the gate
+buys M6.3 a spec and an off-by-default flag, not an enablement.
+
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.
 

@@ -6172,6 +6172,24 @@ async def get_routing_activity(
     }
 
 
+@router.get("/api/routing/misroute")
+async def get_routing_misroute(
+    is_admin: bool = Depends(require_admin),
+):
+    """M6.2 misroute report for the admin Router tab.
+
+    Pure read/aggregate over the full telemetry file — never touches
+    routing behavior and works even when routing is disabled or no
+    RoutingService is active, since it only reads a file.
+    """
+    from ..routing.misroute import load_rows, misroute_report
+
+    global_settings = _get_global_settings()
+    path = Path(global_settings.routing.telemetry.path).expanduser()
+    rows = load_rows(path)
+    return misroute_report(rows)
+
+
 @router.post("/api/routing/settings")
 async def update_routing_settings(
     request: Request,

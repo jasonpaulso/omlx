@@ -2,6 +2,7 @@
 """Tests for the Router tab admin endpoints:
 
 GET  /admin/api/routing/activity
+GET  /admin/api/routing/misroute
 POST /admin/api/routing/settings
 """
 
@@ -104,6 +105,44 @@ class TestActivity:
         assert svc.last_limit == 256
         client.get("/admin/api/routing/activity?limit=0")
         assert svc.last_limit == 1
+
+
+class TestMisroute:
+    def test_missing_file_returns_all_zeros_report(self, harness):
+        client, _gs, _state = harness
+        r = client.get("/admin/api/routing/misroute")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["coverage"]["decisions"] == 0
+        assert body["gate"] == {
+            "joined_n": 0,
+            "eligible": False,
+            "criterion_a": None,
+            "criterion_b": None,
+            "met": False,
+        }
+
+    def test_reads_full_telemetry_file(self, harness):
+        client, gs, _state = harness
+        with open(gs.routing.telemetry.path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"request_id": "a", "target": "m"}) + "\n")
+            f.write(json.dumps({"kind": "feedback", "request_id": "a", "score": 0.1}) + "\n")
+        r = client.get("/admin/api/routing/misroute")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["coverage"]["decisions"] == 1
+        assert body["coverage"]["feedback_rows"] == 1
+        assert body["direct"]["negative_n"] == 1
+
+    def test_works_without_active_routing_service(self, harness):
+        # No service registered on server_state at all -- the endpoint only
+        # reads the telemetry file, so it must not depend on the service.
+        client, gs, state = harness
+        assert state.routing_service is None
+        with open(gs.routing.telemetry.path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"request_id": "a", "target": "m"}) + "\n")
+        r = client.get("/admin/api/routing/misroute")
+        assert r.status_code == 200
 
 
 class TestUpdateSettings:

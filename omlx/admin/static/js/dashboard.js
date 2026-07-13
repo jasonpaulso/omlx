@@ -310,6 +310,9 @@
             routerSaveMessage: '',
             routerSaveError: '',
             _routerRefreshTimer: null,
+            misrouteReport: null,        // GET /admin/api/routing/misroute (M6.2), server-computed, rendered verbatim
+            misrouteLoading: false,
+            misrouteError: '',
 
             // Models sub-tab state
             modelsTab: 'manager',
@@ -685,6 +688,7 @@
                 }
                 if (value === 'router') {
                     await this.loadRouterActivity();
+                    await this.loadMisrouteReport();
                     this.startRouterRefresh();
                 } else {
                     this.stopRouterRefresh();
@@ -4089,12 +4093,41 @@
                 }
             },
 
+            // M6.2 misroute report — server-computed, rendered verbatim (no
+            // client-side recomputation). Fetched alongside router activity.
+            async loadMisrouteReport() {
+                this.misrouteLoading = true;
+                this.misrouteError = '';
+                try {
+                    const response = await fetch('/admin/api/routing/misroute');
+                    if (response.ok) {
+                        this.misrouteReport = await response.json();
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.misrouteError = data.detail || 'Failed to load misroute report.';
+                    }
+                } catch (err) {
+                    console.error('Failed to load misroute report:', err);
+                    this.misrouteError = 'Failed to load misroute report.';
+                } finally {
+                    this.misrouteLoading = false;
+                }
+            },
+
+            // Percentage formatter for the misroute panel: null -> '—'.
+            misroutePct(rate) {
+                return rate != null ? (rate * 100).toFixed(1) + '%' : '—';
+            },
+
             startRouterRefresh() {
                 this.stopRouterRefresh();
                 if (this.routerRefreshInterval > 0) {
                     this.routerAutoRefresh = true;
                     this._routerRefreshTimer = setInterval(() => {
                         this.loadRouterActivity();
+                        this.loadMisrouteReport();
                     }, this.routerRefreshInterval * 1000);
                 }
             },

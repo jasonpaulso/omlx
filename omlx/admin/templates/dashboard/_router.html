@@ -68,7 +68,7 @@
                                     <option value="200">Last 200</option>
                                 </select>
                             </div>
-                            <button @click="loadRouterActivity()"
+                            <button @click="loadRouterActivity(); loadMisrouteReport()"
                                     :disabled="routerLoading"
                                     class="px-4 py-2 bg-neutral-900 text-white text-sm font-medium rounded-lg hover:bg-neutral-800 transition-all disabled:opacity-50">
                                 <span x-show="!routerLoading">Refresh</span>
@@ -180,6 +180,109 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+
+                    <!-- Misroute (M6.2) -->
+                    <div x-show="misrouteReport" x-cloak class="bg-white rounded-2xl border border-neutral-200 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-6 py-4 bg-neutral-100 border-b border-neutral-200">
+                            <div class="flex items-center gap-3">
+                                <i data-lucide="scale" class="w-4 h-4 text-neutral-500"></i>
+                                <span class="text-xs font-bold uppercase tracking-wider text-neutral-600">Misroute (M6.2)</span>
+                            </div>
+                            <span x-show="misrouteError" class="text-sm text-red-500" x-text="misrouteError"></span>
+                        </div>
+
+                        <template x-if="misrouteReport">
+                            <div class="p-6 space-y-6">
+                                <!-- Coverage -->
+                                <p class="text-xs text-neutral-500">
+                                    <span x-text="misrouteReport.coverage.decisions"></span> decisions ·
+                                    <span x-text="misrouteReport.coverage.shadowed"></span> shadowed ·
+                                    <span x-text="misrouteReport.coverage.with_outcome"></span> with outcome ·
+                                    <span x-text="misrouteReport.coverage.feedback_rows"></span> feedback rows
+                                    (<span x-text="misrouteReport.coverage.implicit_feedback"></span> implicit) ·
+                                    <span x-text="misrouteReport.coverage.joined_decisions"></span> joined
+                                </p>
+
+                                <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <!-- Direct -->
+                                    <div class="border border-neutral-200 rounded-xl p-4">
+                                        <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Direct — joined feedback</p>
+                                        <p class="text-xl font-bold text-neutral-900" x-text="misroutePct(misrouteReport.direct.negative_rate)"></p>
+                                        <p class="text-xs text-neutral-500 mt-1">
+                                            <span x-text="misrouteReport.direct.negative_n"></span> negative /
+                                            <span x-text="misrouteReport.direct.joined_n"></span> joined
+                                        </p>
+                                    </div>
+                                    <!-- Proxy -->
+                                    <div class="border border-neutral-200 rounded-xl p-4">
+                                        <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Proxy — shadow disagreement</p>
+                                        <p class="text-xl font-bold text-neutral-900" x-text="misroutePct(misrouteReport.proxy.disagree_rate)"></p>
+                                        <p class="text-xs text-neutral-500 mt-1">
+                                            over <span x-text="misroutePct(misrouteReport.proxy.over_rate)"></span> ·
+                                            under <span x-text="misroutePct(misrouteReport.proxy.under_rate)"></span>
+                                            (<span x-text="misrouteReport.proxy.shadowed_n"></span> shadowed)
+                                        </p>
+                                    </div>
+                                    <!-- Cost -->
+                                    <div class="border border-neutral-200 rounded-xl p-4">
+                                        <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Cost — TRIVIAL vs corpus</p>
+                                        <p class="text-xl font-bold text-neutral-900" x-text="(misrouteReport.cost.trivial_median_ttft_ms != null ? misrouteReport.cost.trivial_median_ttft_ms.toFixed(0) + ' ms' : '—')"></p>
+                                        <p class="text-xs text-neutral-500 mt-1">
+                                            corpus <span x-text="(misrouteReport.cost.corpus_median_ttft_ms != null ? misrouteReport.cost.corpus_median_ttft_ms.toFixed(0) + ' ms' : '—')"></span> ·
+                                            gen <span x-text="(misrouteReport.cost.trivial_median_gen_ms != null ? misrouteReport.cost.trivial_median_gen_ms.toFixed(0) + ' ms' : '—')"></span> /
+                                            <span x-text="(misrouteReport.cost.corpus_median_gen_ms != null ? misrouteReport.cost.corpus_median_gen_ms.toFixed(0) + ' ms' : '—')"></span>
+                                            (<span x-text="misrouteReport.cost.trivial_n"></span> TRIVIAL)
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <!-- Per-target direct table -->
+                                <div x-show="Object.keys(misrouteReport.direct.by_target || {}).length > 0">
+                                    <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-2">Negative rate by target</p>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-xs">
+                                            <thead>
+                                                <tr class="border-b border-neutral-200 bg-neutral-50">
+                                                    <th class="text-left px-4 py-2 font-semibold text-neutral-600">Target</th>
+                                                    <th class="text-right px-4 py-2 font-semibold text-neutral-600">Joined</th>
+                                                    <th class="text-right px-4 py-2 font-semibold text-neutral-600">Negative</th>
+                                                    <th class="text-right px-4 py-2 font-semibold text-neutral-600">Rate</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template x-for="[target, seg] in Object.entries(misrouteReport.direct.by_target || {}).filter(([, s]) => s.joined >= 1)" :key="target">
+                                                    <tr class="border-b border-neutral-100">
+                                                        <td class="px-4 py-2 font-mono text-neutral-700" x-text="target"></td>
+                                                        <td class="px-4 py-2 text-right tabular-nums text-neutral-700" x-text="seg.joined"></td>
+                                                        <td class="px-4 py-2 text-right tabular-nums text-neutral-700" x-text="seg.negative"></td>
+                                                        <td class="px-4 py-2 text-right tabular-nums text-neutral-700" x-text="misroutePct(seg.rate)"></td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- M6.3 gate -->
+                                <div class="border border-neutral-200 rounded-xl p-4 bg-neutral-50">
+                                    <p class="text-[10px] font-bold uppercase tracking-widest text-neutral-400 mb-1">M6.3 gate</p>
+                                    <template x-if="!misrouteReport.gate.eligible">
+                                        <p class="text-sm text-neutral-600">
+                                            <span x-text="misrouteReport.gate.joined_n"></span>/50 joined · not eligible
+                                        </p>
+                                    </template>
+                                    <template x-if="misrouteReport.gate.eligible">
+                                        <p class="text-sm text-neutral-600">
+                                            <span x-text="misrouteReport.gate.joined_n"></span> joined ·
+                                            criterion A: <span x-text="misrouteReport.gate.criterion_a ? 'met' : 'not met'"></span> ·
+                                            criterion B: <span x-text="misrouteReport.gate.criterion_b ? 'met' : 'not met'"></span> ·
+                                            gate: <span class="font-semibold" x-text="misrouteReport.gate.met ? 'MET' : 'not met'"></span>
+                                        </p>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
                     </div>
 
                     <!-- Configuration -->
