@@ -356,7 +356,9 @@ hashes to the decision that routed it, so the signal lands as a normal
 `source:"implicit"` feedback row on the right decision — reusing all of the
 M6.0 plumbing. Best-effort and off the request-serving path (cheap string
 matching only). Purpose: feed M6.2's read-only misroute-rate measurement
-without asking any client to send feedback.
+without asking any client to send feedback. M6.2's outcome data also
+gates **M7 — conversation stickiness** (specced below): its held-vs-fresh
+segmentation is how we'll know whether holding a route ever hurts quality.
 
 Done in M4: **M4.3 settings-delta rescoring** (commit `0e1e5aa`), **M4.4
 passive idle-time sweeps**, and **M4.5 classification-family profiler adapter**.
@@ -394,6 +396,117 @@ Key facts:
 - **Model must be downloadable.** First `warm_up` (or first request) fetches the
   checkpoint from HF; pre-download for offline boxes. Failure is non-fatal —
   warmup logs and the profiler lazy-loads, or classify fails open.
+
+## M7 — conversation stickiness (KV-affinity hysteresis) — SPEC, not implemented
+
+Specced 2026-07-13, sequenced **after M6.2** (misroute measurement should
+land first so held-vs-fresh decisions can be compared from day one).
+Prompted by the qMLX write-up (mrzk.io, 2026-07-09): on the same M3-Ultra
+hardware class, a warm 32k-token turn is **0.64s of prefill; cold is 88s**,
+and the gap widens with depth. Routing today re-classifies every turn of
+an `auto` conversation and can flip a deep conversation to a different
+target with no awareness of the warm KV prefix it abandons — the new
+target cold-prefills the entire history. The existing `residency_epsilon`
+tiebreak only softens *resident-vs-cold-model* ties (avoids a **load**);
+two resident models still flip freely, and the KV cache is per-model, so
+residency stickiness does not prevent the cold-**prefill** penalty.
+
+**Principle.** A mid-conversation flip must pay for itself. Tier
+escalation can (correctness beats latency); a lateral axis flip or a
+de-escalation on a deep history almost never does. Hysteresis suppresses
+the flips that don't, and logs what it suppressed so M6.2 can check the
+call. It is jitter damping, **not** a fix for systematic misclassification
+— the classify-window lesson (window poisons the tier) must be fixed at
+the classifier, not masked here.
+
+**Incumbent recovery (no conversation identity — same stance as M6.1).**
+Every request carries its history, so the previous turn's routed exchange
+rides along. New bounded in-memory index in `RoutingService`, maintained
+in `_record_decision` next to the M6.1 index:
+
+    _sticky_by_key: OrderedDict[key, (target, override, request_id)]
+    key = _user_text_hash(first_user_text) + ":" + _user_text_hash(last_user_text)
+
+The **anchor hash on the first user message** is what makes this safe:
+the M6.1 single-hash key would collide on high-frequency follow-ups
+("thanks", "yes", "continue") — exactly the turns where stickiness fires
+— and could stick conversation A to conversation B's target. Anchored,
+a collision needs two conversations with identical first *and*
+previous-user messages. Lookup on an incoming turn: anchor +
+`hash(second-newest user text)` (turn N's newest user message is turn
+N+1's second-newest). Bounded by `_RECENT_MAX`, in-memory only — a
+restart loses stickiness for one turn and self-heals on the next
+decision. Client-side history edits or branching simply miss the index →
+today's behavior. Fail-open everywhere.
+
+**Decision rule.** Stickiness engages only when *all* hold: the feature
+is enabled; no modality shape rule fired (shape precedes everything,
+decision #11); an incumbent was found; the incumbent still resolves
+(`_finalize_target` validation — target ids rot on requantize); and
+history size ≥ `min_history_chars` (below it, a cold fill is cheap and
+the classifier should win). When engaged, the pipeline runs unchanged
+(classify → table/binary → proposed target), then a switch away from the
+incumbent is **allowed** only if one of:
+
+- **Escalation** — the proposed flip is a tier-up (binary small→big, or
+  an escalate rule fired / complexity ≥ `escalate_complexity_at`).
+- **Fresh override** — tools/turns override fired this turn but had not
+  fired on the incumbent's decision (stored `override` field makes this a
+  one-field compare). A conversation *becoming* agentic justifies moving
+  to the agentic-axis leader; one that already was stays put.
+- **Rotted incumbent** — incumbent id no longer resolves.
+
+Everything else — lateral axis flips at the same tier, de-escalation —
+holds the incumbent. De-escalation stays suppressed by default
+(`allow_deescalation: false`): the decode-speed savings of dropping to a
+small model mid-deep-conversation rarely beat the cold prefill, and the
+quality risk is asymmetric.
+
+**Config** (`routing.sticky`, off by default, same dataclass pattern as
+`RoutingImplicitFeedbackSettings` in `omlx/settings.py`):
+
+```json
+"sticky": {
+  "enabled": false,
+  "min_history_chars": 8000,
+  "allow_deescalation": false
+}
+```
+
+`min_history_chars` default rationale: ~8k chars ≈ 2k tokens ≈ ~3s of
+cold prefill at this hardware class's short-context rates — roughly where
+a flip starts being felt. Tune per host, like everything fit-related.
+
+**Telemetry.** `rule_fired` strings are **not** touched (they are kept
+comparable across deploys — same reason `override:*` kept its historical
+string). `RouteDecision` gains an optional `sticky` field, present only
+when stickiness engaged:
+
+    {"held": true,  "incumbent": id, "proposed": id, "reason": "lateral" | "deescalation"}
+    {"held": false, "incumbent": id, "reason": "escalation" | "override" | "invalid_incumbent"}
+
+The held rows are the interesting product: M6.2 segments misroute rate by
+`sticky.held` to answer "did holding hurt quality?" with the implicit
+(M6.1) and explicit (M6.0) outcome signals. Admin decision feed shows a
+chip (held → incumbent id) in the expandable detail view.
+
+**Non-goals (v1).** No prefix-cache introspection (probing actual warmth
+per candidate — v2 if the chars proxy proves too blunt); no cross-restart
+persistence; no client-supplied conversation ids; no numeric score
+margins (rules only — margins need calibrated scores we don't have until
+M6.2 produces outcome data).
+
+**Verification.** Unit: key computation (anchor + prev-text), index
+maintenance/bounds, the allow/hold matrix (escalation, fresh override,
+rotted id, lateral, de-escalation, below-threshold), fail-open on
+malformed history. Live (Studio): drive a multi-turn `auto` conversation
+past `min_history_chars`, confirm a lateral flip is held (chip in the
+decision feed, `sticky.held` in `routing_decisions.jsonl`), then send a
+clearly-escalating turn and confirm the switch goes through.
+
+**Estimated size.** ~100 lines in `service.py` (index + `_apply_sticky`),
+a settings dataclass, an admin chip, tests. No store or schema changes —
+the `sticky` field is additive on the decision row.
 
 ## M5 — dashboard polish
 
