@@ -18,7 +18,7 @@ import re
 import time
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -604,7 +604,32 @@ class RoutingService:
                         if self._engine_getter is None:
                             raise RuntimeError("no engine getter configured")
                         engine = await self._engine_getter(self.settings.router_model)
-                    return await self._profiler.classify(engine, text)
+                    window_features, raw = await self._profiler.classify(engine, text)
+
+                    # M6.2 run-6 lesson (#13a): the window helps axis but
+                    # poisons tier — once code enters the transcript, every
+                    # turn classifies coding, so re-derive complexity from
+                    # the newest user text only. Best-effort: never fails
+                    # the route, only falls back to the window's complexity.
+                    w = self.settings.classify_window
+                    if w.enabled and w.tier_from_newest:
+                        newest = _last_user_content(messages)
+                        if newest and newest != text:
+                            try:
+                                tier_features, _ = await self._profiler.classify(
+                                    engine, newest
+                                )
+                                window_features = replace(
+                                    window_features,
+                                    complexity=tier_features.complexity,
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                logger.debug(
+                                    "tier-from-newest classify failed, "
+                                    "keeping window complexity: %s",
+                                    e,
+                                )
+                    return window_features, raw
 
                 features, raw_analysis = await asyncio.wait_for(
                     _classify(), timeout=self.settings.classify_timeout_s

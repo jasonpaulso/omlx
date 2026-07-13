@@ -1023,6 +1023,9 @@ class PagedSSDCacheManager(CacheManager):
         expected_block_size_tokens: int = _DEFAULT_BLOCK_SIZE_TOKENS,
         expected_kv_bytes_per_token: int = _DEFAULT_KV_BYTES_PER_TOKEN,
         expected_layer_cache_types: list[str] | None = None,
+        ssd_janitor_enabled: bool = False,
+        ssd_janitor_interval_s: int = 300,
+        ssd_janitor_max_unlinks_per_sweep: int = 256,
     ):
         """
         Initialize the SSD cache manager.
@@ -1064,6 +1067,15 @@ class PagedSSDCacheManager(CacheManager):
             expected_layer_cache_types: Optional current cache layout. When
                 provided, blocks with a different per-layer type list are
                 skipped at startup.
+            ssd_janitor_enabled: When True, run a background sweep that
+                reclaims stale ``_incompatible_index`` blocks (never
+                referenced by any read path) on a fixed interval, so they
+                don't accumulate on disk forever below the size-based
+                eviction threshold. Off by default. No-op in
+                ``hot_cache_only`` mode (no SSD I/O to sweep).
+            ssd_janitor_interval_s: Seconds between janitor sweeps.
+            ssd_janitor_max_unlinks_per_sweep: Max incompatible blocks
+                reclaimed per sweep, bounding per-sweep latency.
         """
         self._cache_dir = cache_dir
         self._max_size = max_size_bytes
@@ -1111,6 +1123,7 @@ class PagedSSDCacheManager(CacheManager):
             "ssd_write_drops": 0,
             "ssd_inline_write_fallbacks": 0,
             "file_missing_on_load": 0,
+            "ssd_janitor_unlinks": 0,
         }
         # Throttle for the write-back backlog warning (once per 60s).
         self._last_backlog_warn = 0.0
@@ -1169,6 +1182,20 @@ class PagedSSDCacheManager(CacheManager):
                 daemon=True,
             )
             self._writer_thread.start()
+
+        # --- Background janitor for stale incompatible-index blocks ---
+        self._ssd_janitor_enabled = ssd_janitor_enabled
+        self._ssd_janitor_interval_s = ssd_janitor_interval_s
+        self._ssd_janitor_max_unlinks_per_sweep = ssd_janitor_max_unlinks_per_sweep
+        self._janitor_shutdown = threading.Event()
+        self._janitor_thread = None
+        if self._ssd_janitor_enabled and not self._hot_cache_only:
+            self._janitor_thread = threading.Thread(
+                target=self._janitor_loop,
+                name="ssd-cache-janitor",
+                daemon=True,
+            )
+            self._janitor_thread.start()
 
         hot_info = ""
         if self._hot_cache_enabled:
@@ -1823,6 +1850,48 @@ class PagedSSDCacheManager(CacheManager):
                 # writer thread blocks waiting for more work.
                 item = None
                 block_hash = tensors_raw = metadata = file_path = None
+
+    def _janitor_loop(self) -> None:
+        """Background loop that periodically reclaims stale incompatible
+        SSD blocks. Runs in a dedicated daemon thread, only started when
+        ``ssd_janitor_enabled`` is True (off by default)."""
+        while not self._janitor_shutdown.wait(timeout=self._ssd_janitor_interval_s):
+            self._janitor_sweep_once()
+
+    def _janitor_sweep_once(self) -> int:
+        """Reclaim up to ``_ssd_janitor_max_unlinks_per_sweep`` blocks from
+        ``_incompatible_index``. Never touches ``_index`` (compatible/live
+        blocks) — incompatible-index entries are never read by any live
+        path, so they are safe to evict unconditionally.
+
+        Returns:
+            Number of blocks reclaimed.
+        """
+        with self._lock:
+            candidates = self._incompatible_index.get_lru_entries(
+                self._ssd_janitor_max_unlinks_per_sweep
+            )
+            evicted: list[PagedSSDBlockMetadata] = []
+            for candidate in candidates:
+                metadata = self._incompatible_index.remove(candidate.block_hash)
+                if metadata is not None:
+                    evicted.append(metadata)
+
+        # Unlink outside the lock, same as the reactive eviction path.
+        freed_bytes = 0
+        for metadata in evicted:
+            freed_bytes += metadata.file_size
+            self._unlink_evicted(metadata, source_index=self._incompatible_index)
+
+        count = len(evicted)
+        if count:
+            self._stats["ssd_janitor_unlinks"] += count
+            logger.info(
+                "SSD janitor: reclaimed %d incompatible blocks (%s)",
+                count,
+                format_bytes(freed_bytes),
+            )
+        return count
 
     def save_block(
         self,
@@ -3616,6 +3685,13 @@ class PagedSSDCacheManager(CacheManager):
     def close(self) -> None:
         """Close the SSD cache manager, flushing hot cache and pending writes."""
         logger.info("Shutting down PagedSSDCacheManager...")
+
+        # Signal janitor thread to stop.
+        if self._janitor_thread:
+            self._janitor_shutdown.set()
+            self._janitor_thread.join(timeout=10)
+            if self._janitor_thread.is_alive():
+                logger.warning("SSD cache janitor thread did not stop within 10s")
 
         # Flush hot cache entries to SSD before shutdown.
         # Dirty blocks wait for queue space first; sustained saturation falls

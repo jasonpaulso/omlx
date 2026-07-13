@@ -165,11 +165,13 @@ def test_settings_default_off_round_trip():
     assert s.classify_window.enabled is False
     assert s.classify_window.max_turns == 6
     assert s.classify_window.max_chars == 4000
+    assert s.classify_window.tier_from_newest is False
     d = s.to_dict()
     assert d["classify_window"] == {
         "enabled": False,
         "max_turns": 6,
         "max_chars": 4000,
+        "tier_from_newest": False,
     }
     again = RoutingSettings.from_dict(d)
     assert again.classify_window == s.classify_window
@@ -177,14 +179,25 @@ def test_settings_default_off_round_trip():
 
 def test_settings_from_dict_custom():
     w = RoutingClassifyWindowSettings.from_dict(
-        {"enabled": True, "max_turns": 3, "max_chars": 1500}
+        {"enabled": True, "max_turns": 3, "max_chars": 1500, "tier_from_newest": True}
     )
-    assert w == RoutingClassifyWindowSettings(enabled=True, max_turns=3, max_chars=1500)
+    assert w == RoutingClassifyWindowSettings(
+        enabled=True, max_turns=3, max_chars=1500, tier_from_newest=True
+    )
 
 
 def test_settings_missing_block_defaults():
     s = RoutingSettings.from_dict({"enabled": True})
     assert s.classify_window.enabled is False
+    assert s.classify_window.tier_from_newest is False
+
+
+def test_settings_tier_from_newest_round_trip():
+    w = RoutingClassifyWindowSettings(tier_from_newest=True)
+    d = w.to_dict()
+    assert d["tier_from_newest"] is True
+    assert RoutingClassifyWindowSettings.from_dict(d).tier_from_newest is True
+    assert RoutingClassifyWindowSettings.from_dict({}).tier_from_newest is False
 
 
 # ---------------------------------------------------------------------------
@@ -332,4 +345,167 @@ async def test_shadow_still_skips_when_window_off_and_no_text(tmp_path):
         messages=TOOL_RESULT_TAIL, has_tools=True, request_id="r1", stream=False
     )
     assert not service._shadow_tasks
+    await service.close()
+
+
+# ---------------------------------------------------------------------------
+# #13a: tier_from_newest — window poisons complexity, so re-derive it from
+# only the newest user text while axis (domain/math/code) keeps the window.
+# ---------------------------------------------------------------------------
+
+WINDOW_ANALYSIS = (
+    "Domain: Programming | Complexity: 5 | Math: False | Code: True | "
+    "Route: big model | Justification: whole transcript has code."
+)
+NEWEST_ANALYSIS = (
+    "Domain: Programming | Complexity: 1 | Math: False | Code: True | "
+    "Route: small model | Justification: just a confirmation."
+)
+
+
+class _SequencedEngine:
+    """Fake engine returning one response per call, in order."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+
+    async def generate(self, **kwargs):
+        self.prompts.append(kwargs["prompt"])
+        idx = len(self.prompts) - 1
+        text = self.responses[idx] if idx < len(self.responses) else self.responses[-1]
+        return SimpleNamespace(text=text)
+
+
+class _RaisingSecondEngine:
+    """First call succeeds with the window analysis; second call raises."""
+
+    def __init__(self, first_response: str) -> None:
+        self.first_response = first_response
+        self.prompts: list[str] = []
+
+    async def generate(self, **kwargs):
+        self.prompts.append(kwargs["prompt"])
+        if len(self.prompts) == 1:
+            return SimpleNamespace(text=self.first_response)
+        raise RuntimeError("boom")
+
+
+async def test_tier_from_newest_off_is_single_classify(tmp_path):
+    """Flag off: byte-identical to today — one classify call, window features."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": False})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    decision = await service.route_chat_request(
+        messages=MULTI_TURN, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 1
+    assert decision.features.complexity == 5
+    await service.close()
+
+
+async def test_tier_from_newest_splits_when_newest_differs_from_window(tmp_path):
+    """Flag on + window on + newest != window text: two classifies, merged
+    features (complexity from newest, domain/math/code from window)."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS, NEWEST_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    decision = await service.route_chat_request(
+        messages=MULTI_TURN, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 2
+    # First call sees the window (all three turns); second sees newest only.
+    assert "write a sort function" in engine.prompts[0]
+    assert "write a sort function" not in engine.prompts[1]
+    assert "make it faster" in engine.prompts[1]
+    # complexity comes from the newest-text classify (1), axis fields from
+    # the window classify (domain/code from WINDOW_ANALYSIS, both agree here
+    # but we assert on the actual merged object to be explicit).
+    assert decision.features.complexity == 1
+    assert decision.features.domain == "Programming"
+    assert decision.features.code is True
+    await service.close()
+
+
+async def test_tier_from_newest_skips_second_call_when_newest_equals_window(
+    tmp_path, monkeypatch
+):
+    """When the window text happens to equal the newest user text verbatim
+    (e.g. window building degenerates to the bare last-user string), the
+    guard must skip the redundant second classify."""
+    import omlx.routing.service as service_mod
+
+    monkeypatch.setattr(
+        service_mod, "build_classify_window", lambda messages, **kw: "hello"
+    )
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    await service.route_chat_request(
+        messages=[{"role": "user", "content": "hello"}],
+        has_tools=False,
+        request_id="r1",
+        stream=False,
+    )
+    assert len(engine.prompts) == 1
+    await service.close()
+
+
+async def test_tier_from_newest_noop_when_window_disabled(tmp_path):
+    """Flag on but window off: split is meaningless without a window, so
+    behavior is a single classify on the last user message."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": False, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([NEWEST_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    await service.route_chat_request(
+        messages=MULTI_TURN, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 1
+    await service.close()
+
+
+async def test_tier_from_newest_second_classify_fails_open_to_window_complexity(
+    tmp_path,
+):
+    """Second classify raising must not fail the route — keep the window's
+    complexity and still route successfully."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _RaisingSecondEngine(WINDOW_ANALYSIS)
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    decision = await service.route_chat_request(
+        messages=MULTI_TURN, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 2
+    assert decision.features.complexity == 5  # window's, not lost to fail-open
+    assert decision.rule_fired != "error"  # route succeeded, not a global fail-open
     await service.close()

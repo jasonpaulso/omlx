@@ -302,6 +302,9 @@ class CacheSettings:
     ssd_cache_max_size: str = "auto"  # "auto" means 10% of SSD capacity
     hot_cache_max_size: str = "0"  # "0" = disabled, e.g. "8GB"
     initial_cache_blocks: int = 256  # Starting blocks (grows dynamically)
+    ssd_janitor_enabled: bool = False  # Background reclaim of incompatible SSD blocks
+    ssd_janitor_interval_s: int = 300
+    ssd_janitor_max_unlinks_per_sweep: int = 256
 
     def get_ssd_cache_dir(self, base_path: Path) -> Path:
         """
@@ -345,6 +348,9 @@ class CacheSettings:
             "ssd_cache_max_size": self.ssd_cache_max_size,
             "hot_cache_max_size": self.hot_cache_max_size,
             "initial_cache_blocks": self.initial_cache_blocks,
+            "ssd_janitor_enabled": self.ssd_janitor_enabled,
+            "ssd_janitor_interval_s": self.ssd_janitor_interval_s,
+            "ssd_janitor_max_unlinks_per_sweep": self.ssd_janitor_max_unlinks_per_sweep,
         }
 
     @classmethod
@@ -361,6 +367,11 @@ class CacheSettings:
             ssd_cache_max_size=data.get("ssd_cache_max_size", "auto"),
             hot_cache_max_size=hot_cache_max_size,
             initial_cache_blocks=data.get("initial_cache_blocks", 256),
+            ssd_janitor_enabled=data.get("ssd_janitor_enabled", False),
+            ssd_janitor_interval_s=data.get("ssd_janitor_interval_s", 300),
+            ssd_janitor_max_unlinks_per_sweep=data.get(
+                "ssd_janitor_max_unlinks_per_sweep", 256
+            ),
         )
 
 
@@ -848,6 +859,10 @@ class RoutingClassifyWindowSettings:
     enabled: bool = False
     max_turns: int = 6  # user/assistant text messages considered, newest first
     max_chars: int = 4000  # total window budget in characters
+    # Compute tier (complexity) from the newest user text only, while axis
+    # (domain/math/code) still uses the window. Only takes effect when
+    # `enabled` is also true; fixes the run-6 lesson (window poisons tier).
+    tier_from_newest: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -855,6 +870,7 @@ class RoutingClassifyWindowSettings:
             "enabled": self.enabled,
             "max_turns": self.max_turns,
             "max_chars": self.max_chars,
+            "tier_from_newest": self.tier_from_newest,
         }
 
     @classmethod
@@ -864,6 +880,7 @@ class RoutingClassifyWindowSettings:
             enabled=data.get("enabled", False),
             max_turns=data.get("max_turns", 6),
             max_chars=data.get("max_chars", 4000),
+            tier_from_newest=data.get("tier_from_newest", False),
         )
 
 
@@ -1781,6 +1798,9 @@ class GlobalSettings:
                 self.base_path
             ),
             hot_cache_max_size=self.cache.get_hot_cache_max_size_bytes(),
+            ssd_janitor_enabled=self.cache.ssd_janitor_enabled,
+            ssd_janitor_interval_s=self.cache.ssd_janitor_interval_s,
+            ssd_janitor_max_unlinks_per_sweep=self.cache.ssd_janitor_max_unlinks_per_sweep,
         )
 
     def to_dict(self) -> dict[str, Any]:

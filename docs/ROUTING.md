@@ -121,7 +121,9 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
   "classify_window": {                     // loop-state phase C; OFF = classify last user text only
     "enabled": false,
     "max_turns": 6,                        // user/assistant text messages considered, newest first
-    "max_chars": 4000                      // total window budget (each message elided head-500/tail-300)
+    "max_chars": 4000,                     // total window budget (each message elided head-500/tail-300)
+    "tier_from_newest": false              // backlog #13a: when on (+window on), re-derive complexity (tier)
+                                           // from newest user text only; axis/domain keep the window
   },
   "targets": {
     "small":  "<a fast, cheap chat model>",
@@ -319,6 +321,13 @@ conversation, not the turn. Do not relax `on_tools` until (a) tier is
 computed from the newest user text while axis/domain keep the window,
 and (b) axis choice carries an interactive-latency term (an axis winner
 never enters the med-q tiebreak) — (b) is now specced as **M8** below.
+**(a) shipped 2026-07-13** as the off-by-default flag
+`classify_window.tier_from_newest`: when set (and the window is on), a
+second best-effort classify on the newest user text supplies `complexity`
+while the window still supplies `domain`/`math`/`code` (fail-open
+sub-step, byte-identical when off). Live measurement of the relax is
+still pending — the flag exists but `on_tools=true` stays the default
+until M8 lands too.
 **Router admin tab** (loop-state phase D): dedicated dashboard tab with
 the full routing config surface, a live decision feed + window stats fed
 by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a

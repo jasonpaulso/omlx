@@ -1364,6 +1364,9 @@ class SchedulerConfig:
     paged_ssd_cache_max_size: int = 100 * 1024 * 1024 * 1024  # 100GB default
     hot_cache_max_size: int = 0  # In-memory hot cache size in bytes (0 = disabled)
     hot_cache_budget: Any | None = None  # Shared process-wide hot cache budget
+    ssd_janitor_enabled: bool = False
+    ssd_janitor_interval_s: int = 300
+    ssd_janitor_max_unlinks_per_sweep: int = 256
 
     # Model identification (for cache isolation between different models)
     model_name: str = ""  # OpenAI API model name (e.g., "mlx-community/Llama-3.2-3B")
@@ -6461,7 +6464,9 @@ class Scheduler:
                             draft_cache_list,
                             model_name=name,
                         )
-                        draft_layer_cache_types = draft_model_cache_config.get_type_names()
+                        draft_layer_cache_types = (
+                            draft_model_cache_config.get_type_names()
+                        )
                     except Exception as e:
                         logger.debug(
                             "Could not infer SpecPrefill draft cache layout: %s", e
@@ -6474,6 +6479,9 @@ class Scheduler:
                 draft_ssd = PagedSSDCacheManager(
                     cache_dir=Path(self.config.paged_ssd_cache_dir),
                     max_size_bytes=self.config.paged_ssd_cache_max_size,
+                    ssd_janitor_enabled=self.config.ssd_janitor_enabled,
+                    ssd_janitor_interval_s=self.config.ssd_janitor_interval_s,
+                    ssd_janitor_max_unlinks_per_sweep=self.config.ssd_janitor_max_unlinks_per_sweep,
                     hot_cache_max_bytes=self.config.hot_cache_max_size,
                     hot_cache_only=self.config.hot_cache_only,
                     hot_cache_budget=self.config.hot_cache_budget,
@@ -10588,6 +10596,9 @@ class Scheduler:
             self.paged_ssd_cache_manager = PagedSSDCacheManager(
                 cache_dir=cache_dir,
                 max_size_bytes=self.config.paged_ssd_cache_max_size,
+                ssd_janitor_enabled=self.config.ssd_janitor_enabled,
+                ssd_janitor_interval_s=self.config.ssd_janitor_interval_s,
+                ssd_janitor_max_unlinks_per_sweep=self.config.ssd_janitor_max_unlinks_per_sweep,
                 hot_cache_max_bytes=self.config.hot_cache_max_size,
                 hot_cache_only=self.config.hot_cache_only,
                 hot_cache_budget=self.config.hot_cache_budget,

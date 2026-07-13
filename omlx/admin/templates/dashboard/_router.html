@@ -449,6 +449,18 @@
                                     </button>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <div>
+                                        <label class="text-sm text-neutral-700">Tier from newest turn</label>
+                                        <p class="text-xs text-neutral-400 mt-0.5">Compute complexity from only the newest user message; domain/math/code still use the window.</p>
+                                    </div>
+                                    <button type="button" @click="routerConfig.classify_window.tier_from_newest = !routerConfig.classify_window.tier_from_newest"
+                                            :class="routerConfig.classify_window.tier_from_newest ? 'bg-black' : 'bg-neutral-200'"
+                                            class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                        <span :class="routerConfig.classify_window.tier_from_newest ? 'translate-x-5' : 'translate-x-0'"
+                                              class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
                                     <label class="text-sm text-neutral-700">Max turns</label>
                                     <input type="number" x-model.number="routerConfig.classify_window.max_turns" min="1" step="1"
                                            class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
