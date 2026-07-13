@@ -833,6 +833,37 @@
                                                    min="1"
                                                    class="w-full sm:w-48 px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all">
                                         </div>
+                                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4">
+                                            <div class="flex-1">
+                                                <label class="text-sm text-neutral-700">{{ t('settings.advanced.ssd_janitor_enabled') }}</label>
+                                                <p class="text-xs text-neutral-400 mt-0.5">{{ t('settings.advanced.ssd_janitor_enabled_hint') }}</p>
+                                            </div>
+                                            <button type="button"
+                                                    @click="globalSettings.cache.ssd_janitor_enabled = !globalSettings.cache.ssd_janitor_enabled"
+                                                    :class="globalSettings.cache.ssd_janitor_enabled ? 'bg-black' : 'bg-neutral-200'"
+                                                    class="relative w-11 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black">
+                                                <span :class="globalSettings.cache.ssd_janitor_enabled ? 'translate-x-5' : 'translate-x-0'"
+                                                      class="block w-5 h-5 bg-white rounded-full shadow-sm transform transition-transform duration-300 absolute top-0.5 left-0.5"></span>
+                                            </button>
+                                        </div>
+                                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4">
+                                            <div>
+                                                <label class="text-sm text-neutral-700">{{ t('settings.advanced.ssd_janitor_interval_s') }}</label>
+                                                <p class="text-xs text-neutral-400 mt-0.5">{{ t('settings.advanced.ssd_janitor_interval_s_hint') }}</p>
+                                            </div>
+                                            <input type="number" x-model.number="globalSettings.cache.ssd_janitor_interval_s"
+                                                   min="1"
+                                                   class="w-full sm:w-48 px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all">
+                                        </div>
+                                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4">
+                                            <div>
+                                                <label class="text-sm text-neutral-700">{{ t('settings.advanced.ssd_janitor_max_unlinks_per_sweep') }}</label>
+                                                <p class="text-xs text-neutral-400 mt-0.5">{{ t('settings.advanced.ssd_janitor_max_unlinks_per_sweep_hint') }}</p>
+                                            </div>
+                                            <input type="number" x-model.number="globalSettings.cache.ssd_janitor_max_unlinks_per_sweep"
+                                                   min="1"
+                                                   class="w-full sm:w-48 px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all">
+                                        </div>
                                     </div>
 
                                     <!-- Streaming subsection -->

@@ -249,6 +249,9 @@ class GlobalSettingsRequest(BaseModel):
     hot_cache_only: bool | None = None
     hot_cache_max_size: str | None = None  # "0" = disabled, "8GB", etc.
     initial_cache_blocks: int | None = None  # Starting blocks (requires restart)
+    ssd_janitor_enabled: bool | None = None  # requires restart
+    ssd_janitor_interval_s: int | None = None  # requires restart
+    ssd_janitor_max_unlinks_per_sweep: int | None = None  # requires restart
 
     # MCP settings
     mcp_config: str | None = None
@@ -3255,6 +3258,9 @@ async def get_global_settings(is_admin: bool = Depends(require_admin)):
             "hot_cache_only": global_settings.cache.hot_cache_only,
             "hot_cache_max_size": global_settings.cache.hot_cache_max_size,
             "initial_cache_blocks": global_settings.cache.initial_cache_blocks,
+            "ssd_janitor_enabled": global_settings.cache.ssd_janitor_enabled,
+            "ssd_janitor_interval_s": global_settings.cache.ssd_janitor_interval_s,
+            "ssd_janitor_max_unlinks_per_sweep": global_settings.cache.ssd_janitor_max_unlinks_per_sweep,
         },
         "mcp": {
             "config_path": global_settings.mcp.config_path,
@@ -3617,6 +3623,14 @@ async def update_global_settings(
         cache_changed = True
     if request.initial_cache_blocks is not None:
         global_settings.cache.initial_cache_blocks = request.initial_cache_blocks
+    if request.ssd_janitor_enabled is not None:
+        global_settings.cache.ssd_janitor_enabled = request.ssd_janitor_enabled
+    if request.ssd_janitor_interval_s is not None:
+        global_settings.cache.ssd_janitor_interval_s = request.ssd_janitor_interval_s
+    if request.ssd_janitor_max_unlinks_per_sweep is not None:
+        global_settings.cache.ssd_janitor_max_unlinks_per_sweep = (
+            request.ssd_janitor_max_unlinks_per_sweep
+        )
 
     if cache_changed:
         success, msg = await _apply_cache_settings_runtime(
