@@ -6158,9 +6158,14 @@ class Scheduler:
                 return False
             if now >= wait.deadline_s:
                 self._cache_freshness_waits.pop(request.request_id, None)
-                logger.debug(
-                    "Timed out cache freshness deferral for store_cache %s before "
-                    "prefix lookup for %s (common_prefix=%d/%d)",
+                # INFO deliberately: a timed-out deferral means this request
+                # will match only the previously persisted prefix and
+                # re-prefill work the in-flight store already computed — the
+                # first thing to look for when warm-turn TTFT regresses.
+                logger.info(
+                    "Cache freshness deferral timed out: store_cache %s still "
+                    "in flight before prefix lookup for %s (common_prefix=%d/%d); "
+                    "proceeding with the last persisted prefix",
                     wait.store_request_id,
                     request.request_id,
                     wait.common_prefix,
@@ -6328,6 +6333,25 @@ class Scheduler:
         else:
             # No paged SSD cache configured - process all tokens
             request.remaining_tokens = request.prompt_token_ids
+
+        # One INFO line per cacheable request: how much prefix was reused and
+        # how much prefill remains. This is the first thing to read when a
+        # warm turn is slow — DEBUG has the block-level detail and the
+        # divergence trace. Short prompts (< one block) can never cache, so
+        # they are skipped to keep the log quiet.
+        if self.block_aware_cache is not None:
+            prompt_len = len(request.prompt_token_ids or [])
+            if prompt_len >= self.config.paged_cache_block_size:
+                cached = getattr(request, "cached_tokens", 0) or 0
+                logger.info(
+                    "Prefix cache: request=%s reused %d/%d tokens (%d blocks), "
+                    "%d to prefill",
+                    request.request_id,
+                    cached,
+                    prompt_len,
+                    getattr(request, "shared_prefix_blocks", 0) or 0,
+                    len(request.remaining_tokens or []),
+                )
 
         # DEBUG-only: trace where this prompt diverges from recently stored
         # cache sequences (issue #1003 always-miss diagnosis).

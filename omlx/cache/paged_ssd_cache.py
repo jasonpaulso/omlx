@@ -1110,7 +1110,10 @@ class PagedSSDCacheManager(CacheManager):
             "preload_time_ms": 0.0,
             "ssd_write_drops": 0,
             "ssd_inline_write_fallbacks": 0,
+            "file_missing_on_load": 0,
         }
+        # Throttle for the write-back backlog warning (once per 60s).
+        self._last_backlog_warn = 0.0
 
         # --- Hot cache (in-memory raw-bytes tier) ---
         self._hot_cache_budget = hot_cache_budget
@@ -1213,6 +1216,26 @@ class PagedSSDCacheManager(CacheManager):
         if self._hot_cache_budget is not None:
             return self._hot_cache_budget.remaining_bytes
         return max(0, self._hot_cache_max_bytes - self._hot_cache_total_bytes)
+
+    def _maybe_warn_write_backlog(self) -> None:
+        """Warn (throttled to once/60s) when the SSD write-back queue is
+        running hot. A sustained backlog means freshly stored blocks may not
+        be persisted before the conversation's next turn arrives — the next
+        request then under-matches the prefix and re-prefills computed work.
+        """
+        depth = self._write_queue.qsize()
+        if depth < max(1, int(self._max_pending_writes * 0.75)):
+            return
+        now = time.monotonic()
+        if now - self._last_backlog_warn < 60.0:
+            return
+        self._last_backlog_warn = now
+        logger.warning(
+            "SSD write-back backlog: %d/%d queued writes; prefix reuse for "
+            "in-flight conversations may lag until the queue drains",
+            depth,
+            self._max_pending_writes,
+        )
 
     def _handle_hot_cache_eviction(self, block_hash: bytes, entry: dict) -> None:
         self._stats["hot_cache_evictions"] += 1
@@ -1321,6 +1344,7 @@ class PagedSSDCacheManager(CacheManager):
             # transient writer backlog doesn't silently drop blocks. Blocking
             # callers (shutdown flush) use the same bounded wait.
             self._write_queue.put(item, timeout=_PENDING_WRITE_PUT_TIMEOUT_SECONDS)
+            self._maybe_warn_write_backlog()
             logger.debug(
                 f"Evicted hot cache block to SSD write queue: "
                 f"{block_hash.hex()[:16]}..."
@@ -2194,6 +2218,7 @@ class PagedSSDCacheManager(CacheManager):
                     (block_hash, tensors_raw, metadata, file_path),
                     timeout=_PENDING_WRITE_PUT_TIMEOUT_SECONDS,
                 )
+                self._maybe_warn_write_backlog()
             except queue.Full:
                 self._stats["ssd_inline_write_fallbacks"] += 1
                 logger.warning(
@@ -2536,6 +2561,7 @@ class PagedSSDCacheManager(CacheManager):
             logger.warning(f"SSD cache file missing: {file_path}")
             self._index.remove(block_hash)
             self._stats["misses"] += 1
+            self._stats["file_missing_on_load"] += 1
             return None
 
         try:
@@ -2552,6 +2578,7 @@ class PagedSSDCacheManager(CacheManager):
                 # and prune the stale index entry.
                 self._index.remove(block_hash)
                 self._stats["misses"] += 1
+                self._stats["file_missing_on_load"] += 1
                 return None
 
             # Defensive: even if the index is stale (e.g. from a previous
@@ -2728,6 +2755,7 @@ class PagedSSDCacheManager(CacheManager):
             logger.warning(f"SSD cache file missing: {file_path}")
             self._index.remove(block_hash)
             self._stats["misses"] += 1
+            self._stats["file_missing_on_load"] += 1
             return None, None
 
         try:
@@ -3580,6 +3608,8 @@ class PagedSSDCacheManager(CacheManager):
                 "hot_cache_max_formatted": format_bytes(
                     self._effective_hot_cache_max_bytes()
                 ),
+                "write_queue_depth": self._write_queue.qsize(),
+                "write_queue_cap": self._max_pending_writes,
                 **self._stats,
             }
 
