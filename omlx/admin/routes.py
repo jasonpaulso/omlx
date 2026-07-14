@@ -6023,14 +6023,15 @@ async def start_suitability_sweep(
 @router.post("/api/suitability/prefill-probe")
 async def start_prefill_probe(
     request: Request,
-    is_admin: bool = Depends(require_admin),
+    is_admin: bool = Depends(_require_admin_or_bearer),
 ):
     """Measure per-model prefill throughput at depth for the M8 est_ttft gate.
 
     Loads each model once and times prefill of salted-unique prompts at fixed
     depths, persisting the result on the suitability record. Best-effort per
     model; returns the measured samples. Serial (one model resident at a time)
-    like the sweep — run it when the box is idle.
+    like the sweep — run it when the box is idle. Admin session OR bearer API
+    key (a model-load-class operation, same auth as /api/models/{id}/load).
     """
     from ..routing.prefill_probe import run_prefill_probe
     from .suitability import get_store
