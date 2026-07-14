@@ -567,7 +567,21 @@ clearly-escalating turn and confirm the switch goes through.
 a settings dataclass, an admin chip, tests. No store or schema changes —
 the `sticky` field is additive on the decision row.
 
-## M8 — TTFT-aware agentic dispatch (prefill-throughput term) — IMPLEMENTED (off by default), live-validation pending
+## M8 — TTFT-aware agentic dispatch (prefill-throughput term) — IMPLEMENTED + LIVE-VALIDATED (off by default)
+
+**Live-validated 2026-07-14** (Studio, `835cfc98`;
+[m8-validation](../spike-data/cc-live-test/m8-validation-2026-07-14.md)). Probe
+measured the dense-QAT code leader gemma-4-31B-it-qat at **225 tps** vs
+Ornith-35B at **1759 tps** (8×). With the gate on, a ~38k-token code request
+that baseline-routes to gemma-31B (~171s est) instead dispatched to Ornith-35B,
+with gemma-31B + two others in `slow_ttft`; at a 10s budget (all candidates over
+budget) the least-slow was kept (non-emptying fallback holds — no 507/collapse).
+Two probe bugs found + fixed en route: token-calibration (`{salt}{i:x}` inflated
+every depth ~5× → OOM + 15-min probes; fixed `835cfc98`) and endpoint auth
+(now bearer-key callable, `2cd859d4`). **Enablement caveat:** the gate is
+fail-open, so it only helps where prefill data exists — turning it on for real
+needs a full-roster probe first (unprobed models pass and can outrank a
+probed-fast model). Studio left on the deployed baseline (gate off).
 
 **Status 2026-07-13:** all three parts landed, unit-tested, off by default
 (`table_dispatch.max_interactive_ttft_s` = None → gate inert; fail-open on
