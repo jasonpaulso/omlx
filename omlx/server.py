@@ -646,7 +646,11 @@ async def lifespan(app: FastAPI):
 
         _server_state.engine_pool.set_idle_sweep_preemptor(preempt_idle_sweep)
         idle_sweep_task = asyncio.create_task(
-            run_idle_sweep_loop(_server_state.engine_pool, routing_settings.idle_sweep)
+            run_idle_sweep_loop(
+                _server_state.engine_pool,
+                routing_settings.idle_sweep,
+                _enabled_model_ids,
+            )
         )
 
     # Initialize MCP if config provided

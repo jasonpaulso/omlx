@@ -991,6 +991,10 @@ class RoutingIdleSweepSettings:
     benchmarks: dict[str, int] = field(
         default_factory=lambda: {"mmlu_pro": 30, "livecodebench": 10}
     )
+    # Also gap-fill the M8 prefill probe for routing-enabled models missing a
+    # prefill record, so requantized models (new id, no prior probe) and the
+    # est_ttft gate stay fresh without a manual admin call. Off by default.
+    prefill_probe: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -999,6 +1003,7 @@ class RoutingIdleSweepSettings:
             "idle_after_s": self.idle_after_s,
             "poll_interval_s": self.poll_interval_s,
             "benchmarks": dict(self.benchmarks),
+            "prefill_probe": self.prefill_probe,
         }
 
     @classmethod
@@ -1011,6 +1016,7 @@ class RoutingIdleSweepSettings:
             benchmarks=dict(
                 data.get("benchmarks", {"mmlu_pro": 30, "livecodebench": 10})
             ),
+            prefill_probe=data.get("prefill_probe", False),
         )
 
 
