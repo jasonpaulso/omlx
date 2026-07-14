@@ -29,19 +29,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEPTHS: tuple[int, ...] = (2048, 8192, 24576)
 
 
+# Short, common, single-token filler words (leading-space form is one BPE
+# token in the tokenizers this serves). Rotating a small set keeps each word
+# ~1 token so the prompt's token count tracks the requested depth; earlier
+# per-word salts (`{salt}{i:x}`) tokenized to ~5 tokens each, inflating every
+# depth ~5x (a "24576" probe became ~120k tokens → OOM + multi-minute probes).
+_FILLER = ("the", "of", "and", "to", "in", "is", "it", "for", "on", "as")
+
+
 def build_salted_prompt(approx_tokens: int, salt: str) -> str:
-    """A ~approx_tokens whitespace-token filler prompt, unique per salt.
+    """A ~approx_tokens single-token-word filler prompt, unique per salt.
 
     Uniqueness matters: a repeated prompt would be served from the prefix
-    cache and time as ~instant, faking the throughput. Word count is a coarse
-    token proxy (these tokenizers land near one token per short word); the
-    probe reports the engine's actual prompt_tokens, so overshoot is harmless.
+    cache and time as ~instant, faking the throughput. A unique salt prefix
+    makes the whole prompt novel each probe (so prefix caching can't serve
+    it), while the rotating single-token filler makes the token count track
+    `approx_tokens` (±~10%; the probe reports the engine's actual
+    prompt_tokens, so the small drift doesn't matter to the tps math).
     """
     approx_tokens = max(1, approx_tokens)
-    # Distinct short words so the tokenizer can't collapse repeats into one
-    # cached run; the salt makes the whole prompt novel each probe.
-    words = [f"{salt}{i:x}" for i in range(approx_tokens)]
-    return "probe " + " ".join(words)
+    words = [_FILLER[i % len(_FILLER)] for i in range(approx_tokens)]
+    return f"probe{salt} " + " ".join(words)
 
 
 async def probe_prefill(
@@ -70,13 +78,19 @@ async def probe_prefill(
         except Exception as e:  # noqa: BLE001 - a bad depth must not kill the probe
             logger.warning("prefill probe failed at depth %d: %s", depth, e)
             continue
+        n = int(getattr(result, "prompt_tokens", 0) or 0)
+        logger.debug(
+            "prefill probe depth=%d actual_prompt_tokens=%d elapsed=%.2fs",
+            depth,
+            n,
+            elapsed,
+        )
         native = float(getattr(result, "prompt_tps", 0.0) or 0.0)
         if native > 0:
             out[depth] = native
             continue
-        n = int(getattr(result, "prompt_tokens", 0) or 0) or depth
         if elapsed > 0:
-            out[depth] = n / elapsed
+            out[depth] = (n or depth) / elapsed
     return out
 
 

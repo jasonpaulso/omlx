@@ -30,7 +30,7 @@ def test_salted_prompt_scales_with_depth():
     short = build_salted_prompt(10, "s")
     long = build_salted_prompt(1000, "s")
     assert len(long) > len(short)
-    assert short.startswith("probe ")
+    assert short.startswith("probe")
 
 
 class _FakeEngine:
