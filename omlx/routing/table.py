@@ -43,6 +43,9 @@ class TableChoice:
     candidates: list[tuple[str, float]] = field(default_factory=list)
     unfit: list[str] = field(default_factory=list)  # excluded: can't ever fit
     disabled: list[str] = field(default_factory=list)  # excluded: not opted in budget
+    slow_ttft: list[str] = field(
+        default_factory=list
+    )  # M8: excluded, est_ttft > budget
 
 
 def _median_latency_s(entry: dict) -> float | None:
@@ -87,6 +90,84 @@ def _load_cost_s(entry: dict) -> float | None:
     return load_s
 
 
+def _prefill_tps(entry: dict, est_tokens: float) -> float | None:
+    """Prefill throughput (tokens/sec) for a prompt of ~est_tokens (M8).
+
+    Reads the per-model `prefill` probe: pick the measured depth nearest but
+    >= est_tokens, else the largest measured depth (a prompt deeper than any
+    probe prefills no faster than the deepest measurement — depth only slows
+    prefill). None when the model was never probed (gate fails open).
+    """
+    prefill = entry.get("prefill")
+    if not isinstance(prefill, dict):
+        return None
+    depths: list[tuple[int, float]] = []
+    for k, v in prefill.items():
+        if k == "measured_at":
+            continue
+        try:
+            depth = int(k)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(v, (int, float)) and v > 0:
+            depths.append((depth, float(v)))
+    if not depths:
+        return None
+    depths.sort()
+    for depth, tps in depths:
+        if depth >= est_tokens:
+            return tps
+    return depths[-1][1]
+
+
+def _est_ttft_s(entry: dict, est_tokens: float, resident: bool) -> float | None:
+    """Estimated time-to-first-token: cold load (if not resident) + prefill.
+
+    None when the model has no prefill probe — the caller treats that as
+    "no data, pass the gate" (fail-open, same stance as the med-q gate).
+    """
+    tps = _prefill_tps(entry, est_tokens)
+    if tps is None:
+        return None
+    prefill_s = est_tokens / tps
+    if resident:
+        return prefill_s
+    return prefill_s + (_load_cost_s(entry) or 0.0)
+
+
+def _ttft_filter(
+    ranked: list[tuple[str, float]],
+    models: dict[str, dict],
+    resident_ids: set[str],
+    est_tokens: float | None,
+    max_ttft_s: float | None,
+) -> tuple[list[tuple[str, float]], list[str]]:
+    """Drop candidates whose estimated TTFT exceeds the interactive budget.
+
+    Returns (eligible_ranked, slow_ttft_ids). Inert (returns the input
+    unchanged) when the gate is unconfigured, the prompt size is unknown, or
+    the pool is empty. Fails open per-candidate: a model with no prefill data
+    is kept. **Never empties a non-empty pool** — if every candidate is too
+    slow, the single lowest-est_ttft candidate survives (a slow answer beats a
+    507 or a silent collapse) and the rest are reported as slow_ttft.
+    """
+    if not max_ttft_s or max_ttft_s <= 0 or not est_tokens or not ranked:
+        return ranked, []
+    kept: list[tuple[str, float]] = []
+    slow: list[tuple[str, float, float]] = []  # (mid, score, est_ttft)
+    for mid, score in ranked:
+        est = _est_ttft_s(models.get(mid, {}), est_tokens, mid in resident_ids)
+        if est is None or est <= max_ttft_s:
+            kept.append((mid, score))
+        else:
+            slow.append((mid, score, est))
+    if kept:
+        return kept, [mid for mid, _s, _e in slow]
+    # Non-emptying fallback: keep the least-slow candidate, report the rest.
+    slow.sort(key=lambda t: t[2])
+    return [(slow[0][0], slow[0][1])], [mid for mid, _s, _e in slow[1:]]
+
+
 def axis_for(features) -> str:
     """Map router features to a suitability axis. Code beats math on ties
     (a prompt flagged both is usually a programming task with math in it);
@@ -113,6 +194,8 @@ def choose(
     default_target: str | None = None,
     fit_budget_gb: float | None = None,
     enabled_ids: set[str] | None = None,
+    est_tokens: float | None = None,
+    max_interactive_ttft_s: float | None = None,
 ) -> TableChoice:
     """Pick a target from the suitability table. Never raises.
 
@@ -148,13 +231,17 @@ def choose(
         ]
         scored.sort(key=lambda t: t[1], reverse=True)
         if scored:
-            target = _pick(scored, resident_ids, residency_epsilon, models)
+            eligible, slow_ttft = _ttft_filter(
+                scored, models, resident_ids, est_tokens, max_interactive_ttft_s
+            )
+            target = _pick(eligible, resident_ids, residency_epsilon, models)
             return TableChoice(
                 target,
                 f"table:escalate>={escalate_at}",
                 scored[:5],
                 sorted(elig.unfit),
                 sorted(elig.disabled),
+                sorted(slow_ttft),
             )
         # fall through to axis dispatch if no overall scores exist
 
@@ -168,13 +255,17 @@ def choose(
     ranked.sort(key=lambda t: t[1], reverse=True)
 
     if ranked:
-        target = _pick(ranked, resident_ids, residency_epsilon, models)
+        eligible, slow_ttft = _ttft_filter(
+            ranked, models, resident_ids, est_tokens, max_interactive_ttft_s
+        )
+        target = _pick(eligible, resident_ids, residency_epsilon, models)
         return TableChoice(
             target,
             f"table:{axis}",
             ranked[:5],
             sorted(elig.unfit),
             sorted(elig.disabled),
+            sorted(slow_ttft),
         )
 
     if default_target:
@@ -199,6 +290,8 @@ def choose_override(
     max_interactive_median_q_time_s: float = 30.0,
     fit_budget_gb: float | None = None,
     enabled_ids: set[str] | None = None,
+    est_tokens: float | None = None,
+    max_interactive_ttft_s: float | None = None,
 ) -> TableChoice:
     """Dispatch an agentic-override request on the measured agentic axis.
 
@@ -222,13 +315,17 @@ def choose_override(
     ranked.sort(key=lambda t: t[1], reverse=True)
 
     if ranked:
-        target = _pick(ranked, resident_ids, residency_epsilon, models)
+        eligible, slow_ttft = _ttft_filter(
+            ranked, models, resident_ids, est_tokens, max_interactive_ttft_s
+        )
+        target = _pick(eligible, resident_ids, residency_epsilon, models)
         return TableChoice(
             target,
             "table:agentic",
             ranked[:5],
             sorted(elig.unfit),
             sorted(elig.disabled),
+            sorted(slow_ttft),
         )
     return TableChoice(
         None, "table:no_candidates", [], sorted(elig.unfit), sorted(elig.disabled)

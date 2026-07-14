@@ -947,6 +947,10 @@ class RoutingTableDispatchSettings:
     default_target: str | None = None
     residency_epsilon: float = 0.02
     max_interactive_median_q_time_s: float = 30.0
+    # M8: estimated-TTFT ceiling (seconds) for prefill-at-depth. None/<=0
+    # disables the gate (inert; behaves exactly as before). Needs per-model
+    # `prefill` throughput in the suitability store; fail-open when absent.
+    max_interactive_ttft_s: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -955,6 +959,7 @@ class RoutingTableDispatchSettings:
             "default_target": self.default_target,
             "residency_epsilon": self.residency_epsilon,
             "max_interactive_median_q_time_s": self.max_interactive_median_q_time_s,
+            "max_interactive_ttft_s": self.max_interactive_ttft_s,
         }
 
     @classmethod
@@ -967,6 +972,7 @@ class RoutingTableDispatchSettings:
             max_interactive_median_q_time_s=data.get(
                 "max_interactive_median_q_time_s", 30.0
             ),
+            max_interactive_ttft_s=data.get("max_interactive_ttft_s"),
         )
 
 

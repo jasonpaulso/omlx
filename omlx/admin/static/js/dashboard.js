@@ -4306,6 +4306,10 @@
                     }
                     if (cfg.table_dispatch) {
                         cfg.table_dispatch.default_target = cfg.table_dispatch.default_target || null;
+                        // Empty est-TTFT input means "gate off" -> null.
+                        if (cfg.table_dispatch.max_interactive_ttft_s === '' || cfg.table_dispatch.max_interactive_ttft_s === undefined) {
+                            cfg.table_dispatch.max_interactive_ttft_s = null;
+                        }
                     }
                     const response = await fetch('/admin/api/routing/settings', {
                         method: 'POST',

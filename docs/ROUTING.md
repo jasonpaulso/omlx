@@ -122,8 +122,9 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
     "enabled": false,
     "max_turns": 6,                        // user/assistant text messages considered, newest first
     "max_chars": 4000,                     // total window budget (each message elided head-500/tail-300)
-    "tier_from_newest": false              // backlog #13a: when on (+window on), re-derive complexity (tier)
-                                           // from newest user text only; axis/domain keep the window
+    "tier_from_newest": false              // backlog #13a/a2: when on (+window on), re-derive complexity (tier)
+                                           // from newest HUMAN text only (skips tool_result-only agent turns);
+                                           // axis/domain keep the window
   },
   "targets": {
     "small":  "<a fast, cheap chat model>",
@@ -143,7 +144,8 @@ Under `routing` in `~/.omlx/settings.json` (defaults shown; whole feature is OFF
     "enabled": false,
     "default_target": null,               // generalist spine; falls back to targets.big
     "residency_epsilon": 0.02,            // prefer a resident model within this score margin; if none is resident, the fastest wins the tie (median_q_time_s, then load_s)
-    "max_interactive_median_q_time_s": 30.0  // thinking-lane exclusion threshold
+    "max_interactive_median_q_time_s": 30.0, // thinking-lane exclusion threshold
+    "max_interactive_ttft_s": null        // M8: est-TTFT ceiling (s) at prompt depth; null = off. Needs a prefill probe; fail-open + non-emptying
   },
   "idle_sweep": {                         // M4.4 passive sweeps; OFF by default
     "enabled": false,
@@ -323,11 +325,15 @@ and (b) axis choice carries an interactive-latency term (an axis winner
 never enters the med-q tiebreak) — (b) is now specced as **M8** below.
 **(a) shipped 2026-07-13** as the off-by-default flag
 `classify_window.tier_from_newest`: when set (and the window is on), a
-second best-effort classify on the newest user text supplies `complexity`
-while the window still supplies `domain`/`math`/`code` (fail-open
-sub-step, byte-identical when off). Live measurement of the relax is
-still pending — the flag exists but `on_tools=true` stays the default
-until M8 lands too.
+second best-effort classify on the newest **human** text supplies
+`complexity` while the window still supplies `domain`/`math`/`code`
+(fail-open sub-step, byte-identical when off). **a2 (2026-07-13):** the
+tier source walks back past tool_result-only agent turns to the newest
+user message that carries genuine text — the cc-live-test proved the
+naive "newest user-role message" is a tool_result blob on agentic
+traffic, so the first cut rated tool output / file dumps as complexity 4.
+Live measurement of the relax is still pending — the flag exists but
+`on_tools=true` stays the default until M8 lands too.
 **Router admin tab** (loop-state phase D): dedicated dashboard tab with
 the full routing config surface, a live decision feed + window stats fed
 by a 256-row in-memory ring buffer (+ jsonl tail after restart), and a
@@ -561,7 +567,26 @@ clearly-escalating turn and confirm the switch goes through.
 a settings dataclass, an admin chip, tests. No store or schema changes —
 the `sticky` field is additive on the decision row.
 
-## M8 — TTFT-aware agentic dispatch (prefill-throughput term) — SPEC, not implemented
+## M8 — TTFT-aware agentic dispatch (prefill-throughput term) — IMPLEMENTED (off by default), live-validation pending
+
+**Status 2026-07-13:** all three parts landed, unit-tested, off by default
+(`table_dispatch.max_interactive_ttft_s` = None → gate inert; fail-open on
+missing prefill data, so it is byte-inert until a probe runs). Part 1 probe:
+`omlx/routing/prefill_probe.py` (+ `store.record_prefill`, optional `prefill`
+field). Part 2/3 gate: `_est_ttft_s` / `_ttft_filter` in `table.py`, threaded
+through `choose`/`choose_override` via `est_tokens` (prompt chars/4 from the
+request messages, incl. tool_result content); excluded leaders land in
+`slow_ttft` on the decision row + telemetry, and the admin decision feed's
+JSON drawer surfaces it. Admin Router tab has a "Max interactive est TTFT (s)"
+input (empty = off). **Not yet live-validated** — the gate does nothing until
+the prefill table is populated. To validate on Studio: (1) run the probe —
+`POST /admin/api/suitability/prefill-probe {"models": [...]}` (loads each model
+once, ~1 load + 3 short prefills each, serial; run idle); (2) confirm `prefill`
+appears on the suitability records; (3) set `max_interactive_ttft_s` (~20s) and
+replay the CC scenario — a ~24k-token agentic request must dispatch away from a
+slow-prefill leader, visible as `slow_ttft` in the decision feed. Idle-sweep
+auto-probing (spec's "eligible for M4.4 idle sweeps") is a follow-up; the manual
+endpoint is the current trigger. Below is the original spec.
 
 Specced 2026-07-13. This is the "axis choice carries an interactive-latency
 term" precondition from the classify-window lesson, promoted to its own

@@ -24,7 +24,13 @@ ANALYSIS = (
 )
 
 
-def make_settings(tmp_path, *, table_enabled=True, default_target=None):
+def make_settings(
+    tmp_path,
+    *,
+    table_enabled=True,
+    default_target=None,
+    max_interactive_ttft_s=None,
+):
     return RoutingSettings.from_dict(
         {
             "enabled": True,
@@ -33,6 +39,7 @@ def make_settings(tmp_path, *, table_enabled=True, default_target=None):
             "table_dispatch": {
                 "enabled": table_enabled,
                 "default_target": default_target,
+                "max_interactive_ttft_s": max_interactive_ttft_s,
             },
         }
     )
@@ -234,3 +241,72 @@ async def test_override_agentic_respects_enable_routing_gate(tmp_path):
     assert d.target == "tool-runner"
     assert d.disabled == ["tool-leader"]
     await svc.close()
+
+
+# --- M8: est_ttft gate, threaded end-to-end from the request messages -------
+
+TTFT_MODELS = {
+    "slow-31b": {
+        "role": "chat",
+        "health": {"status": "ok"},
+        "categories": {"agentic": 0.92, "code": 0.92, "knowledge": 0.92},
+        "evals": [],
+        "prefill": {"24576": 230.0, "measured_at": "x"},
+    },
+    "fast-35b": {
+        "role": "chat",
+        "health": {"status": "ok"},
+        "categories": {"agentic": 0.88, "code": 0.88, "knowledge": 0.88},
+        "evals": [],
+        "prefill": {"24576": 1240.0, "measured_at": "x"},
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_ttft_gate_skips_slow_prefill_leader_on_long_prompt(tmp_path):
+    # ~24k-token prompt (chars/4) with both models resident: the slow-prefill
+    # agentic leader is gated out, the fast one is dispatched, and the skip is
+    # recorded on the decision and in telemetry.
+    svc = make_service(
+        make_settings(tmp_path, max_interactive_ttft_s=30.0),
+        TTFT_MODELS,
+        resident={"slow-31b", "fast-35b"},
+    )
+    big = "x" * (24576 * 4)
+    d = await route(svc, has_tools=True, messages=[{"role": "user", "content": big}])
+    assert d.target == "fast-35b"
+    assert d.rule_fired == "table:agentic"
+    assert d.slow_ttft == ["slow-31b"]
+    await svc.close()
+
+    row = json.loads((tmp_path / "t.jsonl").read_text().splitlines()[0])
+    assert row["slow_ttft"] == ["slow-31b"]
+
+
+@pytest.mark.asyncio
+async def test_ttft_gate_inert_on_short_prompt(tmp_path):
+    # Same gate on, tiny prompt: est_ttft well under budget -> leader wins,
+    # nothing gated.
+    svc = make_service(
+        make_settings(tmp_path, max_interactive_ttft_s=30.0),
+        TTFT_MODELS,
+        resident={"slow-31b", "fast-35b"},
+    )
+    d = await route(svc, has_tools=True, messages=[{"role": "user", "content": "hi"}])
+    assert d.target == "slow-31b"
+    assert d.slow_ttft is None
+    await svc.close()
+
+
+def test_table_dispatch_settings_ttft_round_trip():
+    from omlx.settings import RoutingTableDispatchSettings
+
+    s = RoutingTableDispatchSettings(max_interactive_ttft_s=20.0)
+    assert s.to_dict()["max_interactive_ttft_s"] == 20.0
+    assert (
+        RoutingTableDispatchSettings.from_dict(s.to_dict()).max_interactive_ttft_s
+        == 20.0
+    )
+    # Absent key defaults to None (gate inert / backward compatible).
+    assert RoutingTableDispatchSettings.from_dict({}).max_interactive_ttft_s is None

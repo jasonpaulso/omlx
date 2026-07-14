@@ -386,3 +386,127 @@ class TestLatencyTiebreak:
         c = choose(feats(code=True), models, set(), escalate_at=4)
         assert c.target == "fast"
         assert c.rule == "table:code"
+
+
+# ---------------------------------------------------------------------------
+# M8: est_ttft gate (prefill-throughput-at-depth) + non-emptying fallback.
+# ---------------------------------------------------------------------------
+
+from omlx.routing.table import _est_ttft_s, _prefill_tps  # noqa: E402
+
+
+def pentry(prefill=None, categories=None, load_s=None, **kw):
+    """Model entry with a prefill probe (and optional load_s)."""
+    e = entry_with_load(categories=categories, load_s=load_s, **kw)
+    if prefill is not None:
+        e["prefill"] = prefill
+    return e
+
+
+class TestPrefillHelpers:
+    def test_prefill_tps_nearest_ge_depth(self):
+        pf = {"2048": 1200.0, "8192": 600.0, "24576": 230.0, "measured_at": "x"}
+        assert _prefill_tps({"prefill": pf}, 1500) == 1200.0  # nearest >= 1500
+        assert _prefill_tps({"prefill": pf}, 8192) == 600.0  # exact depth
+        assert _prefill_tps({"prefill": pf}, 9000) == 230.0  # next depth up
+
+    def test_prefill_tps_deeper_than_all_uses_largest(self):
+        pf = {"2048": 1200.0, "8192": 600.0, "measured_at": "x"}
+        assert _prefill_tps({"prefill": pf}, 40000) == 600.0
+
+    def test_prefill_tps_no_data_is_none(self):
+        assert _prefill_tps({}, 1000) is None
+        assert _prefill_tps({"prefill": {"measured_at": "x"}}, 1000) is None
+
+    def test_est_ttft_adds_load_when_cold(self):
+        e = pentry(prefill={"24576": 200.0}, load_s=10.0)
+        # 20k tokens / 200 tps = 100s prefill + 10s load = 110s cold.
+        assert _est_ttft_s(e, 20000, resident=False) == 110.0
+        # Resident: no load term.
+        assert _est_ttft_s(e, 20000, resident=True) == 100.0
+
+
+class TestTtftGate:
+    def _models(self):
+        # slow: strong agentic score but crawls at depth; fast: slightly lower
+        # score, prefills quickly. Both resident (no load term).
+        return {
+            "slow-31b": pentry(categories={"agentic": 0.92}, prefill={"24576": 230.0}),
+            "fast-35b": pentry(categories={"agentic": 0.88}, prefill={"24576": 1240.0}),
+        }
+
+    def test_gate_off_keeps_axis_leader(self):
+        # No max_interactive_ttft_s -> inert, the score leader wins.
+        c = choose_override(self._models(), {"slow-31b", "fast-35b"})
+        assert c.target == "slow-31b"
+        assert c.slow_ttft == []
+
+    def test_gate_excludes_slow_prefill_leader(self):
+        # 24k prompt: slow-31b est ~107s, fast-35b est ~20s. Budget 30s.
+        c = choose_override(
+            self._models(),
+            {"slow-31b", "fast-35b"},
+            est_tokens=24576,
+            max_interactive_ttft_s=30.0,
+        )
+        assert c.target == "fast-35b"
+        assert c.slow_ttft == ["slow-31b"]
+        # Score leader is still reported in candidates (what was considered).
+        assert c.candidates[0][0] == "slow-31b"
+
+    def test_gate_short_prompt_keeps_leader(self):
+        # 2k prompt: slow-31b est ~8.9s, under budget -> leader wins.
+        c = choose_override(
+            self._models(),
+            {"slow-31b", "fast-35b"},
+            est_tokens=2048,
+            max_interactive_ttft_s=30.0,
+        )
+        assert c.target == "slow-31b"
+        assert c.slow_ttft == []
+
+    def test_gate_never_empties_pool(self):
+        # Both too slow for a tiny budget: pick the least-slow, report the rest.
+        c = choose_override(
+            self._models(),
+            {"slow-31b", "fast-35b"},
+            est_tokens=24576,
+            max_interactive_ttft_s=1.0,
+        )
+        assert c.target == "fast-35b"  # lowest est_ttft survives
+        assert c.slow_ttft == ["slow-31b"]
+
+    def test_gate_fails_open_on_missing_prefill(self):
+        # No prefill probe on either -> gate passes, score leader wins.
+        models = {
+            "a": pentry(categories={"agentic": 0.92}),
+            "b": pentry(categories={"agentic": 0.80}),
+        }
+        c = choose_override(
+            models, {"a", "b"}, est_tokens=24576, max_interactive_ttft_s=5.0
+        )
+        assert c.target == "a"
+        assert c.slow_ttft == []
+
+    def test_gate_applies_to_escalate_branch(self):
+        models = {
+            "slow-31b": pentry(
+                categories={"agentic": 0.9, "code": 0.9, "knowledge": 0.9},
+                prefill={"24576": 230.0},
+            ),
+            "fast-35b": pentry(
+                categories={"agentic": 0.8, "code": 0.8, "knowledge": 0.8},
+                prefill={"24576": 1240.0},
+            ),
+        }
+        c = choose(
+            feats(complexity=5, code=True),
+            models,
+            {"slow-31b", "fast-35b"},
+            escalate_at=4,
+            est_tokens=24576,
+            max_interactive_ttft_s=30.0,
+        )
+        assert c.rule == "table:escalate>=4"
+        assert c.target == "fast-35b"
+        assert c.slow_ttft == ["slow-31b"]

@@ -66,6 +66,7 @@ class RouteDecision:
     candidates: list[tuple[str, float]] | None = None  # table dispatch only
     unfit: list[str] | None = None  # table dispatch only: excluded, can't fit
     disabled: list[str] | None = None  # table dispatch only: routing opt-out
+    slow_ttft: list[str] | None = None  # M8: excluded, est_ttft over budget
     # Original target id that did not resolve on the live roster. Set whether
     # the request was substituted to a valid target or passed through to the
     # server's default-or-404 contract; surfaced in telemetry and the header.
@@ -118,6 +119,60 @@ def _last_user_content(messages: list) -> str:
         if _msg_field(msg, "role") == "user":
             return _message_text(msg)
     return ""
+
+
+def _newest_user_text(messages: list) -> str:
+    """Newest user message that carries genuine human text (backlog #13a2).
+
+    Unlike `_last_user_content`, which stops at the newest user *role*
+    message, this walks back past tool_result-only turns. On the agentic
+    path the newest user-role message is a tool_result blob (`_message_text`
+    drops tool_use/tool_result parts, so it flattens to ""); reading that as
+    "newest user intent" rated tool output / file dumps as complexity 4
+    (cc-live-test 2026-07-13). The tier classify must see the human's ask,
+    so return the newest user message whose flattened text is non-empty.
+    """
+    for msg in reversed(messages):
+        if _msg_field(msg, "role") == "user":
+            text = _message_text(msg)
+            if text:
+                return text
+    return ""
+
+
+def _est_prompt_tokens(messages: list) -> float:
+    """Rough prompt size (tokens) for the M8 est_ttft gate.
+
+    `est_tokens ≈ total_chars / 4` over every text-bearing field in the
+    messages — text parts, tool_result content, and tool_use inputs all get
+    prefilled, so all count (unlike the classify helpers, which drop tool
+    payloads). Precision is irrelevant: the gate distinguishes 2k from 20k,
+    not 5%. The system prompt and tool-schema block are not in `messages`, so
+    a turn-one request dominated by a large system prompt under-estimates —
+    acceptable, since deep agent conversations (where prefill hurts most)
+    carry their weight in message history, which this counts.
+    """
+    total = 0
+
+    def _walk(x: Any) -> None:
+        nonlocal total
+        if isinstance(x, str):
+            total += len(x)
+        elif isinstance(x, dict):
+            for v in x.values():
+                _walk(v)
+        elif isinstance(x, (list, tuple)):
+            for v in x:
+                _walk(v)
+        else:
+            for attr in ("content", "text", "input"):
+                v = getattr(x, attr, None)
+                if v is not None:
+                    _walk(v)
+
+    for msg in messages:
+        _walk(_msg_field(msg, "content"))
+    return total / 4
 
 
 def build_classify_window(messages: list, *, max_turns: int, max_chars: int) -> str:
@@ -609,11 +664,15 @@ class RoutingService:
                     # M6.2 run-6 lesson (#13a): the window helps axis but
                     # poisons tier — once code enters the transcript, every
                     # turn classifies coding, so re-derive complexity from
-                    # the newest user text only. Best-effort: never fails
-                    # the route, only falls back to the window's complexity.
+                    # the newest human text only. #13a2: use the newest user
+                    # message with genuine text, skipping tool_result-only
+                    # agent turns (the naive newest-user-role message is a
+                    # tool_result blob on agentic traffic). Best-effort:
+                    # never fails the route, only falls back to the window's
+                    # complexity.
                     w = self.settings.classify_window
                     if w.enabled and w.tier_from_newest:
-                        newest = _last_user_content(messages)
+                        newest = _newest_user_text(messages)
                         if newest and newest != text:
                             try:
                                 tier_features, _ = await self._profiler.classify(
@@ -646,7 +705,7 @@ class RoutingService:
 
         # M3: table dispatch (opt-in) — measured per-axis leaders beat the
         # binary pair when the table has data; binary remains the fallback.
-        table_choice = self._try_table(features, override)
+        table_choice = self._try_table(features, override, messages)
         if table_choice is not None and table_choice.target is not None:
             final_target, invalid = self._finalize_target(table_choice.target)
             decision = RouteDecision(
@@ -659,6 +718,7 @@ class RoutingService:
                 candidates=table_choice.candidates or None,
                 unfit=table_choice.unfit or None,
                 disabled=table_choice.disabled or None,
+                slow_ttft=table_choice.slow_ttft or None,
                 invalid_target=invalid,
             )
             self._record_decision(decision, request_id, endpoint, stream, messages)
@@ -697,7 +757,10 @@ class RoutingService:
         return _last_user_content(messages)
 
     def _try_table(
-        self, features: RouterFeatures | None, override: str | None
+        self,
+        features: RouterFeatures | None,
+        override: str | None,
+        messages: list | None = None,
     ) -> dispatch_table.TableChoice | None:
         """Attempt N-way table dispatch. Returns None to fall back to binary.
 
@@ -719,6 +782,13 @@ class RoutingService:
                 self._fit_budget_getter() if self._fit_budget_getter else None
             )
             enabled_ids = self._enabled_getter() if self._enabled_getter else None
+            # M8: prompt size for the est_ttft gate (inert unless the gate is
+            # configured — skip the walk when it isn't).
+            est_tokens = (
+                _est_prompt_tokens(messages)
+                if messages and cfg.max_interactive_ttft_s
+                else None
+            )
             if override is not None:
                 # Agentic overrides dispatch on the measured agentic axis
                 # (toolcall bench) with the shared residency/load tiebreak;
@@ -733,6 +803,8 @@ class RoutingService:
                     ),
                     fit_budget_gb=fit_budget_gb,
                     enabled_ids=enabled_ids,
+                    est_tokens=est_tokens,
+                    max_interactive_ttft_s=cfg.max_interactive_ttft_s,
                 )
                 if choice.target is not None:
                     return choice
@@ -757,6 +829,8 @@ class RoutingService:
                 default_target=generalist,
                 fit_budget_gb=fit_budget_gb,
                 enabled_ids=enabled_ids,
+                est_tokens=est_tokens,
+                max_interactive_ttft_s=cfg.max_interactive_ttft_s,
             )
         except Exception as e:  # noqa: BLE001 - dispatch must never 5xx
             logger.warning("table dispatch failed, falling back to binary: %s", e)
@@ -1038,6 +1112,7 @@ class RoutingService:
             ),
             "unfit": decision.unfit if decision.unfit else None,
             "disabled": decision.disabled if decision.disabled else None,
+            "slow_ttft": decision.slow_ttft if decision.slow_ttft else None,
             "shadow": None,
             "outcome": None,
         }

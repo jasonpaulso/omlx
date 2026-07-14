@@ -6020,6 +6020,43 @@ async def start_suitability_sweep(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/api/suitability/prefill-probe")
+async def start_prefill_probe(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Measure per-model prefill throughput at depth for the M8 est_ttft gate.
+
+    Loads each model once and times prefill of salted-unique prompts at fixed
+    depths, persisting the result on the suitability record. Best-effort per
+    model; returns the measured samples. Serial (one model resident at a time)
+    like the sweep — run it when the box is idle.
+    """
+    from ..routing.prefill_probe import run_prefill_probe
+    from .suitability import get_store
+
+    engine_pool = _get_engine_pool()
+    if engine_pool is None:
+        raise HTTPException(status_code=503, detail="Engine pool not initialized")
+    store = get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Suitability store not initialized")
+
+    body = await request.json()
+    models = body.get("models") or []
+    if not models:
+        raise HTTPException(status_code=400, detail="'models' is required")
+    unknown = [m for m in models if engine_pool.get_entry(m) is None]
+    if unknown:
+        raise HTTPException(status_code=404, detail=f"Models not found: {unknown}")
+
+    results: dict[str, Any] = {}
+    for model_id in models:
+        samples = await run_prefill_probe(engine_pool, store, model_id)
+        results[model_id] = samples
+    return {"probed": results}
+
+
 @router.get("/api/suitability/table")
 async def get_suitability_table(is_admin: bool = Depends(require_admin)):
     """Return the persistent suitability table plus per-axis rankings.

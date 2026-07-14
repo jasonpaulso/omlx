@@ -509,6 +509,11 @@
                                     <input type="number" x-model.number="routerConfig.table_dispatch.max_interactive_median_q_time_s" min="0" step="1"
                                            class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
                                 </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
+                                    <label class="text-sm text-neutral-700" title="M8: estimated TTFT ceiling from per-model prefill throughput at depth. Empty = off. Needs a prefill probe in the suitability sweep.">Max interactive est TTFT (s)</label>
+                                    <input type="number" x-model.number="routerConfig.table_dispatch.max_interactive_ttft_s" min="0" step="1" placeholder="off"
+                                           class="px-3 py-2 text-sm text-right border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full sm:w-32">
+                                </div>
                             </div>
 
                             <!-- Telemetry -->

@@ -469,6 +469,122 @@ async def test_tier_from_newest_skips_second_call_when_newest_equals_window(
     await service.close()
 
 
+# ---------------------------------------------------------------------------
+# #13a2: tier source must be the newest HUMAN text — on agentic traffic the
+# newest user-role message is a tool_result blob, so walk back to the newest
+# user turn that carries genuine text (cc-live-test 2026-07-13).
+# ---------------------------------------------------------------------------
+
+# An agent loop: human task prompt, assistant tool call, then a user turn that
+# is nothing but the tool's output. The naive "newest user message" is the
+# tool_result blob (which flattens to ""); the tier classify must instead see
+# the human's task prompt.
+AGENTIC_TURN = [
+    {"role": "user", "content": "fix the failing test in the bucket module"},
+    {"role": "assistant", "content": "Let me run the suite."},
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": "E   assert 4 == 5\n1 failed in 0.42s\n" + "x" * 400,
+            }
+        ],
+    },
+]
+
+
+async def test_tier_from_newest_skips_tool_result_only_turn(tmp_path):
+    """#13a2: the newest user turn is a tool_result blob → the second classify
+    must run on the human task prompt, never on the tool output."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS, NEWEST_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    decision = await service.route_chat_request(
+        messages=AGENTIC_TURN, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 2
+    # Second classify sees the human ask, not the tool output or the
+    # assistant turn.
+    assert "fix the failing test" in engine.prompts[1]
+    assert "1 failed" not in engine.prompts[1]
+    assert "Let me run the suite" not in engine.prompts[1]
+    # Complexity comes from the newest-human-text classify.
+    assert decision.features.complexity == 1
+    await service.close()
+
+
+async def test_tier_from_newest_uses_text_block_in_mixed_turn(tmp_path):
+    """A user turn carrying both a human text block and a tool_result: the
+    tier classify sees the human text, never the tool_result content."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS, NEWEST_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    messages = [
+        {"role": "user", "content": "add error handling"},
+        {"role": "assistant", "content": "Done."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "OK " * 200},
+                {"type": "text", "text": "are you sure?"},
+            ],
+        },
+    ]
+    await service.route_chat_request(
+        messages=messages, has_tools=False, request_id="r1", stream=False
+    )
+    assert len(engine.prompts) == 2
+    assert "are you sure?" in engine.prompts[1]
+    assert "OK OK" not in engine.prompts[1]
+    await service.close()
+
+
+async def test_tier_from_newest_no_human_text_keeps_window(tmp_path):
+    """Pure tool_result conversation (no human text anywhere): the guard finds
+    no newest-human text, so it never fires the second classify and keeps the
+    window's complexity."""
+    service = RoutingService(
+        make_settings(tmp_path, window={"enabled": True, "tier_from_newest": True})
+    )
+    engine = _SequencedEngine([WINDOW_ANALYSIS])
+
+    async def getter(model_id):
+        return engine
+
+    service.set_engine_getter(getter)
+    decision = await service.route_chat_request(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t3", "content": "output"}
+                ],
+            }
+        ],
+        has_tools=False,
+        request_id="r1",
+        stream=False,
+    )
+    # No second classify; complexity stays the window's (5).
+    assert len(engine.prompts) == 1
+    assert decision.features.complexity == 5
+    await service.close()
+
+
 async def test_tier_from_newest_noop_when_window_disabled(tmp_path):
     """Flag on but window off: split is meaningless without a window, so
     behavior is a single classify on the last user message."""

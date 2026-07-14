@@ -284,6 +284,32 @@ class SuitabilityStore:
             entry["perf"]["load_s"] = load_s
         self.save()
 
+    def record_prefill(
+        self,
+        model_id: str,
+        samples: dict[Any, float],
+        *,
+        date: str | None = None,
+    ) -> None:
+        """Store per-model prefill throughput at fixed depths (M8).
+
+        `samples` maps a depth (token count, int or str) to measured
+        tokens/sec of pure prefill. Overwrites any prior probe wholesale —
+        prefill speed is pure hardware, so the newest measurement is the
+        truth (there is no per-bench averaging as with accuracy). Written
+        as an optional top-level `prefill` field, e.g.
+        ``{"2048": tps, "8192": tps, "24576": tps, "measured_at": iso}``;
+        absent means "never probed" and the dispatch gate fails open.
+        """
+        self.ensure_model(model_id)
+        entry = self._data["models"][model_id]
+        prefill: dict[str, Any] = {
+            str(depth): float(tps) for depth, tps in samples.items()
+        }
+        prefill["measured_at"] = date or _now_iso()
+        entry["prefill"] = prefill
+        self.save()
+
     def record_unhealthy(
         self, model_id: str, *, phase: str, message: str, date: str | None = None
     ) -> None:

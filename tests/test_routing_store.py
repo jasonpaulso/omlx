@@ -224,6 +224,33 @@ def test_set_role_creates_model_if_absent(tmp_path):
     assert entry["role_source"] == "user"
 
 
+# --- record_prefill (M8) -------------------------------------------------
+
+
+def test_record_prefill_stores_per_depth_and_persists(tmp_path):
+    store = make_store(tmp_path)
+    store.load()
+    store.record_prefill("m", {2048: 1200.0, 8192: 600.0, 24576: 230.0})
+    entry = store.get_model("m")
+    assert entry["prefill"]["2048"] == 1200.0
+    assert entry["prefill"]["24576"] == 230.0
+    assert "measured_at" in entry["prefill"]
+    # Persisted and reloaded intact.
+    store2 = make_store(tmp_path)
+    store2.load()
+    assert store2.get_model("m")["prefill"]["8192"] == 600.0
+
+
+def test_record_prefill_overwrites_prior_probe(tmp_path):
+    store = make_store(tmp_path)
+    store.load()
+    store.record_prefill("m", {2048: 1000.0})
+    store.record_prefill("m", {2048: 1500.0, 8192: 700.0})
+    pf = store.get_model("m")["prefill"]
+    assert pf["2048"] == 1500.0
+    assert pf["8192"] == 700.0
+
+
 # --- record_eval / category derivation ----------------------------------
 
 
@@ -594,12 +621,24 @@ def test_larger_n_beats_newer_smaller_run(tmp_path):
     store = make_store(tmp_path)
     store.load()
     store.record_eval(
-        "m", bench="mmlu", accuracy=0.60, n=100, baseline=True,
-        thinking=False, time_s=1.0, date="2026-07-01T00:00:00+00:00",
+        "m",
+        bench="mmlu",
+        accuracy=0.60,
+        n=100,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        date="2026-07-01T00:00:00+00:00",
     )
     store.record_eval(
-        "m", bench="mmlu", accuracy=1.00, n=4, baseline=True,
-        thinking=False, time_s=1.0, date="2026-07-02T00:00:00+00:00",
+        "m",
+        bench="mmlu",
+        accuracy=1.00,
+        n=4,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        date="2026-07-02T00:00:00+00:00",
     )
     assert store.get_model("m")["categories"]["knowledge"] == 0.60
 
@@ -608,11 +647,23 @@ def test_equal_n_newer_wins(tmp_path):
     store = make_store(tmp_path)
     store.load()
     store.record_eval(
-        "m", bench="mmlu", accuracy=0.60, n=8, baseline=True,
-        thinking=False, time_s=1.0, date="2026-07-01T00:00:00+00:00",
+        "m",
+        bench="mmlu",
+        accuracy=0.60,
+        n=8,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        date="2026-07-01T00:00:00+00:00",
     )
     store.record_eval(
-        "m", bench="mmlu", accuracy=0.80, n=8, baseline=True,
-        thinking=False, time_s=1.0, date="2026-07-02T00:00:00+00:00",
+        "m",
+        bench="mmlu",
+        accuracy=0.80,
+        n=8,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        date="2026-07-02T00:00:00+00:00",
     )
     assert store.get_model("m")["categories"]["knowledge"] == 0.80
