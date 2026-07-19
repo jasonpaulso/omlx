@@ -145,6 +145,13 @@ class TestRunAccuracyBenchmarkBaselineMode:
         mock_pool._settings_manager.clear_baseline_ids = MagicMock(
             side_effect=lambda: call_order.append(("clear", None))
         )
+        # Baseline mode resolves to stock settings: the real manager returns
+        # ModelSettings() for a baseline id, so chat_template_kwargs is None
+        # and contributes nothing to sampling_kwargs. A bare MagicMock would
+        # hand back a truthy attribute and fake a leak that cannot happen.
+        mock_pool._settings_manager.get_settings = MagicMock(
+            return_value=ModelSettings()
+        )
 
         async def fake_get_engine(model_id, force_lm=True, stamp_activity=True):
             call_order.append(("get_engine", model_id))

@@ -527,7 +527,7 @@ class _StubEnginePool:
         if model_id in self.loaded:
             self.loaded.remove(model_id)
 
-    async def get_engine(self, model_id, force_lm=False):
+    async def get_engine(self, model_id, force_lm=False, stamp_activity=True):
         self.loaded.append(model_id)
         return SimpleNamespace(model_id=model_id)
 
