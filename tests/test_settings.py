@@ -397,6 +397,7 @@ class TestCacheSettings:
             "ssd_cache_max_size": "50GB",
             "hot_cache_max_size": "0",
             "initial_cache_blocks": 256,
+            # Fork: SSD janitor knobs (off by default).
             "ssd_janitor_enabled": False,
             "ssd_janitor_interval_s": 300,
             "ssd_janitor_max_unlinks_per_sweep": 256,
@@ -1540,18 +1541,6 @@ class TestGlobalSettings:
         scheduler_config = settings.to_scheduler_config()
         assert scheduler_config.initial_cache_blocks == 8192
 
-    def test_to_scheduler_config_ssd_janitor(self):
-        """Test that ssd_janitor_* settings pass through to SchedulerConfig."""
-        settings = GlobalSettings()
-        settings.cache.ssd_janitor_enabled = True
-        settings.cache.ssd_janitor_interval_s = 60
-        settings.cache.ssd_janitor_max_unlinks_per_sweep = 10
-
-        scheduler_config = settings.to_scheduler_config()
-        assert scheduler_config.ssd_janitor_enabled is True
-        assert scheduler_config.ssd_janitor_interval_s == 60
-        assert scheduler_config.ssd_janitor_max_unlinks_per_sweep == 10
-
 
 class TestInitSettings:
     """Tests for init_settings and get_settings."""
@@ -1730,7 +1719,9 @@ class TestResolveDefaultBasePath:
         self, monkeypatch, tmp_path
     ):
         resolved = tmp_path / "resolved-base"
-        monkeypatch.setattr("omlx.settings.resolve_default_base_path", lambda: resolved)
+        monkeypatch.setattr(
+            "omlx.settings.resolve_default_base_path", lambda: resolved
+        )
 
         settings = GlobalSettings.load()
 

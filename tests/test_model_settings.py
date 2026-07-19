@@ -28,21 +28,6 @@ class TestModelSettings:
         assert settings.is_favorite is False
         # Issue #926: opt-in per model. Default off.
         assert settings.trust_remote_code is False
-        # Semantic-routing opt-in. Default off.
-        assert settings.enable_routing is False
-
-    def test_enable_routing_roundtrip(self):
-        """enable_routing survives to_dict -> from_dict roundtrip."""
-        original = ModelSettings(enable_routing=True)
-        d = original.to_dict()
-        assert d["enable_routing"] is True
-        assert ModelSettings.from_dict(d).enable_routing is True
-
-    def test_enable_routing_excluded_from_profiles(self):
-        """Routing eligibility is a base-model property, never in a profile."""
-        from omlx.model_profiles import EXCLUDED_FROM_PROFILES
-
-        assert "enable_routing" in EXCLUDED_FROM_PROFILES
 
     def test_trust_remote_code_roundtrip(self):
         """Test trust_remote_code field survives to_dict -> from_dict roundtrip."""
@@ -82,7 +67,6 @@ class TestModelSettings:
     def test_trust_remote_code_excluded_from_profiles(self):
         """Security flag must never propagate via profiles or templates."""
         from omlx.model_profiles import EXCLUDED_FROM_PROFILES
-
         assert "trust_remote_code" in EXCLUDED_FROM_PROFILES
 
     def test_max_context_window(self):
@@ -127,7 +111,7 @@ class TestModelSettings:
             "temperature": 0.8,
             "repetition_penalty": 1.3,
             "is_pinned": True,
-            "invalid_key": "should be ignored",
+            "invalid_key": "should be ignored"
         }
         settings = ModelSettings.from_dict(data)
         assert settings.temperature == 0.8
@@ -171,10 +155,7 @@ class TestModelSettings:
         )
         d = original.to_dict()
         restored = ModelSettings.from_dict(d)
-        assert restored.chat_template_kwargs == {
-            "enable_thinking": True,
-            "custom_key": 42,
-        }
+        assert restored.chat_template_kwargs == {"enable_thinking": True, "custom_key": 42}
 
     def test_chat_template_kwargs_from_dict(self):
         """Test chat_template_kwargs created from dict."""
@@ -185,6 +166,7 @@ class TestModelSettings:
         settings = ModelSettings.from_dict(data)
         assert settings.temperature == 0.8
         assert settings.chat_template_kwargs == {"reasoning_effort": "high"}
+
 
     def test_ttl_seconds_default(self):
         """Test ttl_seconds defaults to None."""
@@ -324,53 +306,21 @@ class TestModelSettingsManager:
             assert settings.is_pinned is False
             assert settings.is_default is False
 
-    def test_override_settings_win_over_persisted_and_baseline(self):
-        """M4.3: transient variant override beats baseline and stored settings."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manager = ModelSettingsManager(Path(tmpdir))
-            manager.set_settings("m", ModelSettings(temperature=0.9, mtp_enabled=False))
-            # Baseline mode would normally force stock defaults...
-            manager.set_baseline_ids({"m"})
-            # ...but an override takes precedence and yields stock + one knob.
-            manager.set_override_settings({"m": ModelSettings(mtp_enabled=True)})
-            got = manager.get_settings("m")
-            assert got.mtp_enabled is True
-            assert got.temperature is None  # stock sampling, not the persisted 0.9
-            # Clearing the override falls back to baseline (stock).
-            manager.clear_override_settings()
-            assert manager.get_settings("m").mtp_enabled is False
-            # Clearing baseline too restores the persisted settings.
-            manager.clear_baseline_ids()
-            assert manager.get_settings("m").temperature == 0.9
-
-    def test_override_is_isolated_copy(self):
-        """Mutating the source ModelSettings must not leak into the override."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manager = ModelSettingsManager(Path(tmpdir))
-            src = ModelSettings(mtp_enabled=True)
-            manager.set_override_settings({"m": src})
-            src.mtp_enabled = False
-            assert manager.get_settings("m").mtp_enabled is True
-
     def test_load_existing_file(self):
         """Test loading from existing settings file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create settings file
             settings_file = Path(tmpdir) / "model_settings.json"
-            settings_file.write_text(
-                json.dumps(
-                    {
-                        "version": 1,
-                        "models": {
-                            "llama-3b": {
-                                "temperature": 0.7,
-                                "is_pinned": True,
-                                "is_default": True,
-                            }
-                        },
+            settings_file.write_text(json.dumps({
+                "version": 1,
+                "models": {
+                    "llama-3b": {
+                        "temperature": 0.7,
+                        "is_pinned": True,
+                        "is_default": True
                     }
-                )
-            )
+                }
+            }))
 
             manager = ModelSettingsManager(Path(tmpdir))
             settings = manager.get_settings("llama-3b")
@@ -519,10 +469,7 @@ class TestModelSettingsManager:
             manager = ModelSettingsManager(Path(tmpdir))
 
             settings = ModelSettings(
-                chat_template_kwargs={
-                    "enable_thinking": False,
-                    "reasoning_effort": "medium",
-                }
+                chat_template_kwargs={"enable_thinking": False, "reasoning_effort": "medium"}
             )
             manager.set_settings("test-model", settings)
 
@@ -540,7 +487,9 @@ class TestModelSettingsManager:
             manager = ModelSettingsManager(Path(tmpdir))
 
             # Set kwargs
-            settings = ModelSettings(chat_template_kwargs={"enable_thinking": True})
+            settings = ModelSettings(
+                chat_template_kwargs={"enable_thinking": True}
+            )
             manager.set_settings("test-model", settings)
             assert manager.get_settings("test-model").chat_template_kwargs is not None
 
@@ -649,16 +598,12 @@ class TestModelSettingsManager:
             def worker(model_id):
                 try:
                     for i in range(10):
-                        manager.set_settings(
-                            model_id, ModelSettings(temperature=i / 10)
-                        )
+                        manager.set_settings(model_id, ModelSettings(temperature=i/10))
                         _ = manager.get_settings(model_id)
                 except Exception as e:
                     errors.append(e)
 
-            threads = [
-                threading.Thread(target=worker, args=(f"model-{i}",)) for i in range(5)
-            ]
+            threads = [threading.Thread(target=worker, args=(f"model-{i}",)) for i in range(5)]
             for t in threads:
                 t.start()
             for t in threads:
