@@ -1101,26 +1101,30 @@ templates.env.globals["version"] = _omlx_version
 
 # i18n defaults (English) — overridden once set_admin_getters is called
 _i18n_dir = Path(__file__).parent / "i18n"
-_en_locale: dict = {}
-try:
-    _en_locale = json.loads((_i18n_dir / "en.json").read_text(encoding="utf-8"))
-except Exception:
-    pass
-templates.env.globals["t"] = lambda key: _en_locale.get(key, key)
-templates.env.globals["locale_json"] = json.dumps(_en_locale, ensure_ascii=False)
-templates.env.globals["current_lang"] = "en"
+
+
+def _read_locale_file(name: str) -> dict:
+    try:
+        return json.loads((_i18n_dir / f"{name}.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _load_locale(language: str) -> dict:
-    """Load locale dict for a given language code. Falls back to en on error."""
-    path = _i18n_dir / f"{language}.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        try:
-            return json.loads((_i18n_dir / "en.json").read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+    """Load locale dict for a language code, with fork strings overlaid.
+
+    Fork-only strings live in ``fork.<lang>.json`` so the upstream locale files
+    stay byte-identical to upstream and never conflict on merge.
+    """
+    locale = _read_locale_file(language) or _read_locale_file("en")
+    locale.update(_read_locale_file(f"fork.{language}") or _read_locale_file("fork.en"))
+    return locale
+
+
+_en_locale: dict = _load_locale("en")
+templates.env.globals["t"] = lambda key: _en_locale.get(key, key)
+templates.env.globals["locale_json"] = json.dumps(_en_locale, ensure_ascii=False)
+templates.env.globals["current_lang"] = "en"
 
 
 def _make_t(locale: dict):
