@@ -59,6 +59,8 @@ See `omlx/admin/CLAUDE.md` (auto-loads when working under `omlx/admin/`): server
 
 See `packaging/CLAUDE.md` (auto-loads when working under `packaging/`): `build.py` builds the embedded Python layers for the Swift `.app`; the `[bundle]` extra is its source of truth.
 
+To cut a local `.app`/DMG: `PYTHON_BIN=$(pwd)/.venv/bin/python apps/omlx-mac/Scripts/build.sh release` → `apps/omlx-mac/build/Stage/oMLX.app`, then `hdiutil create -volname oMLX -srcfolder <app> -ov -format UDZO out.dmg`. There is no in-repo DMG or notarization pipeline (retired with the Swift rewrite) — the app is ad-hoc signed, so Gatekeeper needs a right-click → Open on first launch. The bundle embeds `omlx` from the worktree, so check out the commit you want before building.
+
 ## Conventions
 
 - License header on new source files: `# SPDX-License-Identifier: Apache-2.0`
