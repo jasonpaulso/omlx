@@ -1113,11 +1113,15 @@ def _read_locale_file(name: str) -> dict:
 def _load_locale(language: str) -> dict:
     """Load locale dict for a language code, with fork strings overlaid.
 
-    Fork-only strings live in ``fork.<lang>.json`` so the upstream locale files
-    stay byte-identical to upstream and never conflict on merge.
+    Fork-only strings live in ``i18n/fork/<lang>.json``. The subdirectory (not
+    ``fork.<lang>.json`` alongside the upstream files) keeps them out of
+    upstream's ``i18n/*.json`` locale globs, which assert every locale carries
+    the full upstream key set.
     """
     locale = _read_locale_file(language) or _read_locale_file("en")
-    locale.update(_read_locale_file(f"fork.{language}") or _read_locale_file("fork.en"))
+    locale.update(
+        _read_locale_file(f"fork/{language}") or _read_locale_file("fork/en")
+    )
     return locale
 
 

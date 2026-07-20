@@ -69,7 +69,7 @@ See `packaging/CLAUDE.md` (auto-loads when working under `packaging/`): `build.p
 Every fork line inside an upstream-owned file is future merge-conflict surface. Keep the contact points few and small:
 
 - **Never run `black .` / `ruff format` repo-wide.** Upstream is not black-clean; a repo-wide run reformats upstream files and manufactures conflicts with zero behavior change. Format only files this fork owns.
-- **i18n:** fork strings go in `omlx/admin/i18n/fork.<lang>.json`, never in the upstream `<lang>.json`. `_load_locale()` overlays them. The 9 upstream locale files must stay byte-identical to `main`.
+- **i18n:** fork strings go in `omlx/admin/i18n/fork/<lang>.json`, never in the upstream `<lang>.json`. `_load_locale()` overlays them. The 9 upstream locale files must stay byte-identical to `main`.
 - **Tests:** fork tests go in fork-named files (`tests/test_routing_*.py`, `tests/test_ssd_janitor.py`, …), never appended to an upstream test file. Reuse upstream fixtures/helpers by import rather than editing their file.
 - **Don't change an upstream function's signature or pass it new kwargs** — wrap it in a fork-owned function instead. Kwarg additions break upstream's own test stubs silently, with no conflict marker (see `de089c1f`).
 
