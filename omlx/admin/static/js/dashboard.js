@@ -601,6 +601,7 @@
             suitTableOpen: true,
             suitRoleOptions: ['chat', 'draft_companion', 'embedding', 'reranker', 'router'],
             suitRoleSaving: {},       // { model_id: bool }
+            suitClearing: {},         // { model_id: bool }
             suitExpandedModel: null,
             _suitRefreshTimer: null,
 
@@ -4058,6 +4059,36 @@
                     const saving = { ...this.suitRoleSaving };
                     delete saving[modelId];
                     this.suitRoleSaving = saving;
+                }
+            },
+
+            async clearSuitabilityScores(modelId) {
+                if (!confirm(window.t('suitability.table.detail.clear_confirm'))) return;
+                this.suitClearing = { ...this.suitClearing, [modelId]: true };
+                try {
+                    const resp = await fetch('/admin/api/suitability/clear', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ model_id: modelId }),
+                    });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        if (data.model) {
+                            this.suitTable.models[modelId] = data.model;
+                        }
+                        // Rankings are server-derived; refetch so this model
+                        // drops out of the per-axis top-3 immediately.
+                        this.loadSuitabilityTable();
+                    } else {
+                        console.error('Failed to clear scores:', await resp.text());
+                    }
+                } catch (err) {
+                    console.error('Failed to clear scores:', err);
+                } finally {
+                    const clearing = { ...this.suitClearing };
+                    delete clearing[modelId];
+                    this.suitClearing = clearing;
                 }
             },
 

@@ -667,3 +667,93 @@ def test_equal_n_newer_wins(tmp_path):
         date="2026-07-02T00:00:00+00:00",
     )
     assert store.get_model("m")["categories"]["knowledge"] == 0.80
+
+
+# --- clear_scores ------------------------------------------------------
+
+
+def _bench_a_model(store, model_id="m", accuracy=0.9):
+    store.record_eval(
+        model_id,
+        bench="mmlu",
+        accuracy=accuracy,
+        n=50,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        load_s=4.2,
+    )
+
+
+def test_clear_scores_drops_measurements_keeps_identity(tmp_path):
+    store = make_store(tmp_path)
+    _bench_a_model(store)
+    store.record_prefill("m", {8192: 500.0})
+    store.set_role("m", "chat", source="user")
+    entry = store.get_model("m")
+    entry["size_gb"] = 12.0
+    assert entry["categories"]
+
+    assert store.clear_scores("m") is True
+
+    entry = store.get_model("m")
+    assert entry["evals"] == []
+    assert entry["categories"] == {}
+    assert "prefill" not in entry
+    assert entry["perf"] == {"load_s": None, "gen_tps": None, "ttft_s": None}
+    assert entry["cleared_at"]
+    # Identity survives: the entry, a user role override, and size.
+    assert entry["role"] == "chat"
+    assert entry["role_source"] == "user"
+    assert entry["size_gb"] == 12.0
+
+
+def test_clear_scores_removes_model_from_rankings(tmp_path):
+    store = make_store(tmp_path)
+    _bench_a_model(store, "stale", accuracy=0.95)
+    _bench_a_model(store, "fresh", accuracy=0.60)
+    assert [mid for mid, _ in store.ranked("knowledge")] == ["stale", "fresh"]
+
+    store.clear_scores("stale")
+    assert [mid for mid, _ in store.ranked("knowledge")] == ["fresh"]
+
+
+def test_clear_scores_resets_unhealthy_flag(tmp_path):
+    # An error raised by the old weights says nothing about the new ones.
+    store = make_store(tmp_path)
+    _bench_a_model(store)
+    store.record_unhealthy("m", phase="load", message="boom")
+    assert store.get_model("m")["health"]["status"] == "unhealthy"
+
+    store.clear_scores("m")
+    assert store.get_model("m")["health"] == {"status": "ok", "last_error": None}
+
+
+def test_clear_scores_persists_and_is_reloadable(tmp_path):
+    store = make_store(tmp_path)
+    _bench_a_model(store)
+    store.clear_scores("m")
+
+    reloaded = make_store(tmp_path)
+    reloaded.load()
+    entry = reloaded.get_model("m")
+    assert entry["evals"] == []
+    assert entry["categories"] == {}
+    assert entry["cleared_at"]
+
+
+def test_clear_scores_unknown_model_returns_false(tmp_path):
+    store = make_store(tmp_path)
+    assert store.clear_scores("never-seen") is False
+    assert store.get_model("never-seen") is None
+
+
+def test_clear_scores_then_rebench_restores_ranking(tmp_path):
+    store = make_store(tmp_path)
+    _bench_a_model(store, accuracy=0.95)
+    store.clear_scores("m")
+    _bench_a_model(store, accuracy=0.42)
+    # Only the post-clear measurement counts — the old score is gone, not
+    # averaged in.
+    assert store.get_model("m")["categories"]["knowledge"] == 0.42
+    assert len(store.get_model("m")["evals"]) == 1

@@ -326,6 +326,36 @@ class SuitabilityStore:
         }
         self.save()
 
+    def clear_scores(self, model_id: str) -> bool:
+        """Drop every measurement for a model, keeping its identity.
+
+        For weights that changed under an unchanged model id — a re-quantize
+        or re-download of an updated upstream release. Every record then
+        describes weights that no longer exist, but nothing about the entry
+        looks stale, so dispatch keeps ranking on numbers from the old
+        snapshot. Clearing returns the model to "never benched": it drops
+        out of the rankings until a sweep re-measures it.
+
+        Kept: the entry itself, role (including a user override) and size.
+        Dropped: evals, derived categories, the prefill probe, perf, and any
+        unhealthy flag (an error from the old weights says nothing about the
+        new ones). Stamps `cleared_at` so the table can show why a model
+        with no scores has none.
+
+        Returns False if the model has no entry (nothing to clear).
+        """
+        entry = self._data.get("models", {}).get(model_id)
+        if entry is None:
+            return False
+        entry["evals"] = []
+        entry["categories"] = {}
+        entry["perf"] = {"load_s": None, "gen_tps": None, "ttft_s": None}
+        entry.pop("prefill", None)
+        entry["health"] = {"status": "ok", "last_error": None}
+        entry["cleared_at"] = _now_iso()
+        self.save()
+        return True
+
     def get_model(self, model_id: str) -> dict[str, Any] | None:
         models: dict[str, dict[str, Any]] = self._data.get("models", {})
         return models.get(model_id)

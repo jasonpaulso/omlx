@@ -6180,6 +6180,34 @@ async def set_suitability_role(
     return {"ok": True, "model": store.get_model(model_id)}
 
 
+@router.post("/api/suitability/clear")
+async def clear_suitability_scores(
+    request: Request,
+    is_admin: bool = Depends(require_admin),
+):
+    """Drop a model's measured suitability scores, keeping role and identity.
+
+    For weights re-quantized or re-downloaded under the same model id: the
+    stored records describe the old snapshot, and nothing marks them stale.
+    """
+    from .suitability import get_store
+
+    store = get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Suitability store not initialized")
+
+    body = await request.json()
+    model_id = body.get("model_id")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="'model_id' is required")
+    if not store.clear_scores(model_id):
+        raise HTTPException(
+            status_code=404, detail=f"No suitability record for: {model_id}"
+        )
+    logger.info("Suitability scores cleared for %s", model_id)
+    return {"ok": True, "model": store.get_model(model_id)}
+
+
 @router.post("/api/suitability/rescore")
 async def start_suitability_rescore(
     request: Request,

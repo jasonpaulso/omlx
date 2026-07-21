@@ -88,3 +88,46 @@ class TestSuitabilityTableOnDiskFilter:
         admin_routes._get_engine_pool = lambda: None
         body = c.get("/admin/api/suitability/table").json()
         assert set(body["models"]) == {"model-a", "model-gone"}
+
+
+class TestSuitabilityClearEndpoint:
+    def test_clear_wipes_scores_and_returns_entry(self, client):
+        c, store, _pool = client
+        r = c.post("/admin/api/suitability/clear", json={"model_id": "model-a"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["model"]["evals"] == []
+        assert body["model"]["categories"] == {}
+        assert body["model"]["cleared_at"]
+        assert store.all_models()["model-a"]["categories"] == {}
+
+    def test_cleared_model_drops_out_of_rankings(self, client):
+        c, _store, _pool = client
+        c.post("/admin/api/suitability/clear", json={"model_id": "model-a"})
+        body = c.get("/admin/api/suitability/table").json()
+        # Still listed (it's on disk), just unranked until re-benched.
+        assert set(body["models"]) == {"model-a"}
+        assert body["rankings"]["agentic"] == []
+
+    def test_clear_leaves_other_models_alone(self, client):
+        c, store, _pool = client
+        c.post("/admin/api/suitability/clear", json={"model_id": "model-a"})
+        assert store.all_models()["model-gone"]["categories"]["agentic"] == 0.9
+
+    def test_clear_unknown_model_404s(self, client):
+        c, _store, _pool = client
+        r = c.post("/admin/api/suitability/clear", json={"model_id": "nope"})
+        assert r.status_code == 404
+
+    def test_clear_without_model_id_400s(self, client):
+        c, _store, _pool = client
+        assert c.post("/admin/api/suitability/clear", json={}).status_code == 400
+
+    def test_clear_works_for_offdisk_model(self, client):
+        # A model can be cleared while its weights are absent — the table
+        # hides it, but the record (and the stale scores) still exist.
+        c, store, _pool = client
+        r = c.post("/admin/api/suitability/clear", json={"model_id": "model-gone"})
+        assert r.status_code == 200
+        assert store.all_models()["model-gone"]["categories"] == {}
