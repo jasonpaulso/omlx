@@ -708,6 +708,27 @@ templates + i18n; no Python):
   server-assigned role and falls back to `classify_role()`'s name/size
   heuristic when a model isn't in the table yet.
 
+**M5.2 — target-slot health legibility (open).** Both items come from a
+2026-07-20 session where `targets.big` sat on a model whose `enable_routing`
+was off and nothing said so: the slot worked (named slots bypass the gate by
+design, ROUTING.md decision above), but the model never appeared in the ranked
+pool, and the only trace was `ThinkingCap-…` showing up in the `disabled` array
+of every decision row. Operator found it by reading raw telemetry.
+
+- **Disabled-target error state.** A routing-configured model whose
+  `enable_routing` is off should surface an admin error/badge on the Router tab,
+  peer to the existing missing-target ("does not resolve on the roster") badge,
+  and a matching startup log line. Wording must convey the actual semantics —
+  the slot *does* dispatch, it's the ranked-pool eligibility that's missing —
+  not "broken".
+- **Model-picker labeling.** In the target-slot selection lists, append a
+  minimal label to models that are not routing-enabled. **Do not block
+  selection** — a hard block would contradict the named-slot rule (naming a
+  model in a slot *is* the opt-in, which is what keeps fail-open from ever
+  landing on a disabled model). **Decided 2026-07-20:** label them, and flip
+  `enable_routing` on when one is selected, with the toggle visible at the point
+  of selection so the side effect is never silent.
+
 ## Shelved
 
 - **Upstream PR** — offer the virtual-id plumbing + shape rules to `jundot/omlx` (issues #193/#265 asked for `model:"auto"`), with the semantic layer as the differentiator. Cut the PR branch from `main`, not `deploy` (see CLAUDE.md branch model). The routing admin UI and `enable_routing` gate are fork-only polish, not part of a minimal upstream patch. **Held pending rigorous validation** — a comprehensive report/audit of routing correctness and quality before anything is offered upstream. Check-in scheduled 2026-07-14.
