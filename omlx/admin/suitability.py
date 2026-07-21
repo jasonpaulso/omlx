@@ -8,11 +8,14 @@ including manual bench runs — into the store. Load/serve failures are
 recorded as first-class unhealthy entries, not missing rows.
 """
 
+import hashlib
 import logging
 import statistics
+import time
+from pathlib import Path
 from typing import Any
 
-from ..routing.store import SuitabilityStore
+from ..routing.store import SuitabilityStore, stale_records
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,85 @@ def _model_size_gb(model_id: str) -> float | None:
         return None
 
 
+_FINGERPRINT_TTL_S = 30.0
+_fingerprint_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def _fingerprint_dir(path: Path) -> str | None:
+    """Hash (name, size, mtime_ns) over every file in a model directory.
+
+    Nanosecond mtime, not whole seconds: a re-quantize that happens to
+    produce the same byte count within the same second would otherwise
+    fingerprint identically.
+    """
+    parts: list[str] = []
+    try:
+        for f in sorted(path.rglob("*")):
+            if not f.is_file():
+                continue
+            st = f.stat()
+            parts.append(f"{f.relative_to(path)}:{st.st_size}:{st.st_mtime_ns}")
+    except OSError as e:
+        logger.debug("weights fingerprint: stat failed for %s: %s", path, e)
+        return None
+    if not parts:
+        return None
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def weights_fingerprint(model_id: str) -> str | None:
+    """Identity stamp for the weights currently on disk, or None if unknown.
+
+    Stamped onto every eval and prefill record so the suitability table can
+    tell measurements of *these* weights from measurements of whatever used
+    to live at this model id — a re-quantize or a re-download of an updated
+    upstream release keeps the id and replaces the tensors, and nothing else
+    about the record would show it.
+
+    Cheap by construction: a stat walk (no file reads), memoized for
+    `_FINGERPRINT_TTL_S` because the table endpoint polls every 5s. Size and
+    mtime, not content — so a byte-identical copy that lands with fresh
+    mtimes reads as changed. That errs toward a stale badge on unchanged
+    weights, which costs a re-bench; the reverse would hide the thing this
+    exists to surface.
+
+    None means "can't tell" (no pool, unknown id, unreadable dir) and is
+    never treated as stale.
+    """
+    if _engine_pool is None:
+        return None
+    now = time.monotonic()
+    cached = _fingerprint_cache.get(model_id)
+    if cached and now - cached[0] < _FINGERPRINT_TTL_S:
+        return cached[1]
+    fingerprint: str | None = None
+    try:
+        entry = _engine_pool.get_entry(model_id)
+        model_path = getattr(entry, "model_path", None) if entry else None
+        if model_path:
+            fingerprint = _fingerprint_dir(Path(model_path))
+    except Exception as e:  # noqa: BLE001 - staleness hinting is best-effort
+        logger.debug("weights fingerprint: failed for %s: %s", model_id, e)
+        fingerprint = None
+    _fingerprint_cache[model_id] = (now, fingerprint)
+    return fingerprint
+
+
+def model_staleness(model_id: str, entry: dict) -> dict[str, Any]:
+    """Which of a model's stored measurements predate the weights on disk.
+
+    Returns ``{"current": <fingerprint|None>, "stale": bool, "records":
+    [<bench>, ...]}``. Records stamped before fingerprinting existed carry
+    None and are reported as unknown, not stale — otherwise every row
+    predating this feature would light up at once.
+    """
+    current = weights_fingerprint(model_id)
+    if current is None:
+        return {"current": None, "stale": False, "records": []}
+    stale = stale_records(entry, current)
+    return {"current": current, "stale": bool(stale), "records": stale}
+
+
 def _harvest_result(result_data: dict) -> None:
     """Record one completed benchmark result into the store."""
     if _store is None:
@@ -97,6 +179,7 @@ def _harvest_result(result_data: dict) -> None:
         source=source,
         run_id=result_data.get("run_id"),
         variant=variant,
+        weights_fingerprint=weights_fingerprint(model_id),
     )
 
 

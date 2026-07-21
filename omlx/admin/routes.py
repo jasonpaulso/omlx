@@ -6099,7 +6099,7 @@ async def start_prefill_probe(
     key (a model-load-class operation, same auth as /api/models/{id}/load).
     """
     from ..routing.prefill_probe import run_prefill_probe
-    from .suitability import get_store
+    from .suitability import get_store, weights_fingerprint
 
     engine_pool = _get_engine_pool()
     if engine_pool is None:
@@ -6118,7 +6118,12 @@ async def start_prefill_probe(
 
     results: dict[str, Any] = {}
     for model_id in models:
-        samples = await run_prefill_probe(engine_pool, store, model_id)
+        samples = await run_prefill_probe(
+            engine_pool,
+            store,
+            model_id,
+            weights_fingerprint=weights_fingerprint(model_id),
+        )
         results[model_id] = samples
     return {"probed": results}
 
@@ -6133,7 +6138,7 @@ async def get_suitability_table(is_admin: bool = Depends(require_admin)):
     record — a re-downloaded model reappears with its scores intact.
     """
     from ..routing.store import DISPATCH_AXES
-    from .suitability import get_store
+    from .suitability import get_store, model_staleness
 
     store = get_store()
     if store is None:
@@ -6148,6 +6153,10 @@ async def get_suitability_table(is_admin: bool = Depends(require_admin)):
     axes = sorted(DISPATCH_AXES)
     return {
         "models": models,
+        # Weights-changed hints, kept alongside rather than merged into the
+        # entries: those are live store objects, and a derived key written
+        # into one would be persisted on the next save.
+        "staleness": {mid: model_staleness(mid, entry) for mid, entry in models.items()},
         "rankings": {
             axis: [(mid, score) for mid, score in store.ranked(axis) if mid in models]
             for axis in axes

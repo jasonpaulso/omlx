@@ -242,12 +242,18 @@ async def _run_prefill_gap_fill_pass(
     targets: list[str],
 ) -> None:
     from ..routing.prefill_probe import run_prefill_probe
+    from .suitability import weights_fingerprint
 
     for model_id in targets:
         if not _still_idle(engine_pool, cfg):
             logger.info("Prefill gap-fill: request arrived, stopping pass")
             return
         try:
-            await run_prefill_probe(engine_pool, store, model_id)
+            await run_prefill_probe(
+                engine_pool,
+                store,
+                model_id,
+                weights_fingerprint=weights_fingerprint(model_id),
+            )
         except Exception:  # noqa: BLE001 - one bad probe must not kill the pass
             logger.exception("Prefill gap-fill: probe failed for %s", model_id)

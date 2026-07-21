@@ -11,6 +11,7 @@ from omlx.routing.store import (
     DISPATCH_AXES,
     SuitabilityStore,
     classify_role,
+    stale_records,
 )
 
 
@@ -757,3 +758,79 @@ def test_clear_scores_then_rebench_restores_ranking(tmp_path):
     # averaged in.
     assert store.get_model("m")["categories"]["knowledge"] == 0.42
     assert len(store.get_model("m")["evals"]) == 1
+
+
+# --- stale_records (weights fingerprint) -------------------------------
+
+
+def _eval_with_fp(store, model_id="m", bench="mmlu", fp=None, accuracy=0.9):
+    store.record_eval(
+        model_id,
+        bench=bench,
+        accuracy=accuracy,
+        n=50,
+        baseline=True,
+        thinking=False,
+        time_s=1.0,
+        weights_fingerprint=fp,
+    )
+
+
+def test_stale_records_flags_only_changed_fingerprints(tmp_path):
+    store = make_store(tmp_path)
+    _eval_with_fp(store, bench="mmlu", fp="old")
+    _eval_with_fp(store, bench="toolcall", fp="current")
+    assert stale_records(store.get_model("m"), "current") == ["mmlu"]
+
+
+def test_stale_records_treats_unstamped_as_unknown_not_stale(tmp_path):
+    # Every record written before fingerprinting existed carries None; they
+    # must not all light up the moment the feature ships.
+    store = make_store(tmp_path)
+    _eval_with_fp(store, bench="mmlu", fp=None)
+    assert stale_records(store.get_model("m"), "current") == []
+
+
+def test_stale_records_uses_authoritative_record_per_bench(tmp_path):
+    # A re-bench on new weights supersedes the old record for that bench.
+    store = make_store(tmp_path)
+    _eval_with_fp(store, bench="mmlu", fp="old")
+    _eval_with_fp(store, bench="mmlu", fp="current")
+    assert stale_records(store.get_model("m"), "current") == []
+
+
+def test_stale_records_includes_prefill_probe(tmp_path):
+    store = make_store(tmp_path)
+    _eval_with_fp(store, bench="mmlu", fp="current")
+    store.record_prefill("m", {8192: 500.0}, weights_fingerprint="old")
+    assert stale_records(store.get_model("m"), "current") == ["prefill"]
+
+
+def test_stale_records_ignores_unstamped_prefill(tmp_path):
+    store = make_store(tmp_path)
+    store.record_prefill("m", {8192: 500.0})
+    assert stale_records(store.get_model("m"), "current") == []
+
+
+def test_stale_records_empty_entry(tmp_path):
+    store = make_store(tmp_path)
+    store.ensure_model("m")
+    assert stale_records(store.get_model("m"), "current") == []
+
+
+def test_prefill_fingerprint_does_not_break_depth_parsing(tmp_path):
+    # table._prefill_tps parses the prefill dict's keys as depths; the
+    # fingerprint key must be skipped like measured_at.
+    from omlx.routing.table import _prefill_tps
+
+    store = make_store(tmp_path)
+    store.record_prefill("m", {2048: 900.0, 8192: 500.0}, weights_fingerprint="abc")
+    assert _prefill_tps(store.get_model("m"), 4000) == 500.0
+
+
+def test_clear_scores_drops_fingerprinted_records(tmp_path):
+    store = make_store(tmp_path)
+    _eval_with_fp(store, bench="mmlu", fp="old")
+    store.record_prefill("m", {8192: 500.0}, weights_fingerprint="old")
+    store.clear_scores("m")
+    assert stale_records(store.get_model("m"), "current") == []

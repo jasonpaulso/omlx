@@ -583,7 +583,7 @@
             suitBenchmarks: { mmlu: false, mmlu_pro: true, kmmlu: false, cmmlu: false, jmmlu: false, hellaswag: false, truthfulqa: false, arc_challenge: false, winogrande: false, gsm8k: false, mathqa: false, humaneval: false, mbpp: false, livecodebench: true, bbq: false, safetybench: false, toolcall: false },
             suitSampleSizes: { mmlu: 1000, mmlu_pro: 300, kmmlu: 300, cmmlu: 300, jmmlu: 300, hellaswag: 200, truthfulqa: 0, arc_challenge: 300, winogrande: 300, gsm8k: 100, mathqa: 300, humaneval: 0, mbpp: 200, livecodebench: 100, bbq: 300, safetybench: 300, toolcall: 300 },
             suitBatchSize: 1,
-            suitTable: { models: {}, rankings: {} },
+            suitTable: { models: {}, rankings: {}, staleness: {} },
             suitTableLoading: false,
             suitSweepError: '',
             suitSkipped: null,        // { model_id: role } from the last sweep response
@@ -3856,7 +3856,7 @@
                     const resp = await fetch('/admin/api/suitability/table');
                     if (resp.ok) {
                         const data = await resp.json();
-                        this.suitTable = { models: data.models || {}, rankings: data.rankings || {} };
+                        this.suitTable = { models: data.models || {}, rankings: data.rankings || {}, staleness: data.staleness || {} };
                     }
                 } catch (err) {
                     console.error('Failed to load suitability table:', err);
@@ -3867,6 +3867,25 @@
 
             suitAxes() {
                 return Object.keys(this.suitTable.rankings).sort();
+            },
+
+            // Weights on disk changed since these scores were measured — a
+            // re-quantize or re-download under the same model id.
+            suitIsStale(modelId) {
+                return !!this.suitTable.staleness?.[modelId]?.stale;
+            },
+
+            suitStaleTitle(modelId) {
+                const records = this.suitTable.staleness?.[modelId]?.records || [];
+                return window.t('suitability.table.stale_title').replace('{records}', records.join(', '));
+            },
+
+            // A single eval row measured against weights that are no longer
+            // on disk. Unstamped records (pre-fingerprint) are never flagged.
+            suitEvalIsStale(modelId, evalRecord) {
+                const current = this.suitTable.staleness?.[modelId]?.current;
+                if (!current || !evalRecord?.weights_fingerprint) return false;
+                return evalRecord.weights_fingerprint !== current;
             },
 
             // Draft/assistant companions are never ranked as routing targets,

@@ -131,3 +131,47 @@ class TestSuitabilityClearEndpoint:
         r = c.post("/admin/api/suitability/clear", json={"model_id": "model-gone"})
         assert r.status_code == 200
         assert store.all_models()["model-gone"]["categories"] == {}
+
+
+class TestSuitabilityTableStaleness:
+    def test_staleness_map_is_present_for_every_listed_model(self, client):
+        c, _store, _pool = client
+        body = c.get("/admin/api/suitability/table").json()
+        assert set(body["staleness"]) == set(body["models"])
+        # No engine pool paths in this fixture -> "can't tell", never stale.
+        assert body["staleness"]["model-a"] == {
+            "current": None,
+            "stale": False,
+            "records": [],
+        }
+
+    def test_staleness_is_not_written_into_stored_entries(self, client):
+        # The response embeds live store objects; a derived key merged into
+        # one would be persisted on the next save().
+        c, store, _pool = client
+        c.get("/admin/api/suitability/table")
+        entry = store.all_models()["model-a"]
+        assert "stale" not in entry
+        assert "staleness" not in entry
+
+    def test_stale_model_is_flagged(self, client, monkeypatch):
+        from omlx.admin import suitability as suit
+
+        c, store, _pool = client
+        store.record_eval(
+            "model-a",
+            bench="mmlu_pro",
+            accuracy=0.7,
+            n=30,
+            baseline=True,
+            thinking=False,
+            time_s=1.0,
+            weights_fingerprint="old-weights",
+        )
+        monkeypatch.setattr(suit, "weights_fingerprint", lambda mid: "new-weights")
+
+        body = c.get("/admin/api/suitability/table").json()
+        assert body["staleness"]["model-a"]["stale"] is True
+        assert body["staleness"]["model-a"]["records"] == ["mmlu_pro"]
+        # Flagging is informational: the model still ranks.
+        assert any(mid == "model-a" for mid, _ in body["rankings"]["knowledge"])

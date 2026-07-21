@@ -105,6 +105,33 @@ def _latest_per_bench(
     return best
 
 
+def stale_records(entry: dict[str, Any], current_fingerprint: str) -> list[str]:
+    """Names of a model's measurements that predate the weights on disk.
+
+    Compares each authoritative baseline record's stored weights
+    fingerprint against `current_fingerprint`; the prefill probe is
+    reported under the name "prefill". Records with no fingerprint (written
+    before stamping existed) are unknown, not stale — otherwise every
+    pre-existing row would flag at once.
+    """
+    stale = [
+        bench
+        for bench, record in _latest_per_bench(
+            entry.get("evals", []), baseline_only=True
+        ).items()
+        if record.get("weights_fingerprint")
+        and record["weights_fingerprint"] != current_fingerprint
+    ]
+    prefill = entry.get("prefill")
+    if (
+        isinstance(prefill, dict)
+        and prefill.get("weights_fingerprint")
+        and prefill["weights_fingerprint"] != current_fingerprint
+    ):
+        stale.append("prefill")
+    return sorted(stale)
+
+
 def _derive_categories(evals: list[dict[str, Any]]) -> dict[str, float]:
     """Mean accuracy per axis, over the latest baseline record per bench."""
     by_axis: dict[str, list[float]] = {}
@@ -251,6 +278,7 @@ class SuitabilityStore:
         run_id: str | None = None,
         date: str | None = None,
         variant: str | None = None,
+        weights_fingerprint: str | None = None,
     ) -> None:
         """Append a provenance record, re-derive categories, mark healthy.
 
@@ -258,6 +286,10 @@ class SuitabilityStore:
         changed load-time setting (e.g. "mtp_enabled", "dflash", "kv_quant").
         Baseline runs leave it None. It never affects category derivation
         (variant runs are baseline=False and excluded), only diffability.
+
+        `weights_fingerprint` stamps which on-disk weights were measured, so
+        a re-quantize under the same model id can be told from a fresh
+        measurement. None means unstamped, never stale. See `stale_records`.
         """
         self.ensure_model(model_id)
         entry = self._data["models"][model_id]
@@ -276,6 +308,7 @@ class SuitabilityStore:
                 "source": source,
                 "run_id": run_id,
                 "variant": variant,
+                "weights_fingerprint": weights_fingerprint,
             }
         )
         entry["categories"] = _derive_categories(entry["evals"])
@@ -290,6 +323,7 @@ class SuitabilityStore:
         samples: dict[Any, float],
         *,
         date: str | None = None,
+        weights_fingerprint: str | None = None,
     ) -> None:
         """Store per-model prefill throughput at fixed depths (M8).
 
@@ -307,6 +341,7 @@ class SuitabilityStore:
             str(depth): float(tps) for depth, tps in samples.items()
         }
         prefill["measured_at"] = date or _now_iso()
+        prefill["weights_fingerprint"] = weights_fingerprint
         entry["prefill"] = prefill
         self.save()
 

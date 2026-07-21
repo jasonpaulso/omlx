@@ -154,7 +154,7 @@ class TestPrefillGapFill:
     async def test_selects_only_enabled_and_missing_prefill(self, monkeypatch):
         probed = []
 
-        async def fake_probe(engine_pool, store, model_id):
+        async def fake_probe(engine_pool, store, model_id, **kwargs):
             probed.append(model_id)
 
         monkeypatch.setattr("omlx.routing.prefill_probe.run_prefill_probe", fake_probe)
@@ -177,7 +177,7 @@ class TestPrefillGapFill:
     async def test_sorts_smallest_first(self, monkeypatch):
         probed = []
 
-        async def fake_probe(engine_pool, store, model_id):
+        async def fake_probe(engine_pool, store, model_id, **kwargs):
             probed.append(model_id)
 
         monkeypatch.setattr("omlx.routing.prefill_probe.run_prefill_probe", fake_probe)
@@ -201,7 +201,7 @@ class TestPrefillGapFill:
     async def test_stops_early_when_no_longer_idle(self, monkeypatch):
         probed = []
 
-        async def fake_probe(engine_pool, store, model_id):
+        async def fake_probe(engine_pool, store, model_id, **kwargs):
             probed.append(model_id)
             # A request "arrives" after the first probe.
             pool._active = True

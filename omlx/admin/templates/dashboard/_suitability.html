@@ -366,6 +366,12 @@
                                             <button type="button" class="flex items-center gap-1.5 hover:text-neutral-600" @click="suitToggleExpanded(modelId)">
                                                 <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-neutral-400 transition-transform flex-shrink-0" :class="suitExpandedModel === modelId ? 'rotate-90' : ''"></i>
                                                 <span x-text="modelId"></span>
+                                                <span x-show="suitIsStale(modelId)" x-cloak
+                                                      :title="suitStaleTitle(modelId)"
+                                                      class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full flex-shrink-0">
+                                                    <i data-lucide="alert-triangle" class="w-2.5 h-2.5"></i>
+                                                    <span>{{ t('suitability.table.stale_badge') }}</span>
+                                                </span>
                                             </button>
                                         </td>
                                         <td class="px-4 py-3">
@@ -431,8 +437,13 @@
                                                     </thead>
                                                     <tbody>
                                                         <template x-for="(e, idx) in suitEvalsSorted(suitTable.models[modelId].evals)" :key="idx">
-                                                            <tr class="border-b border-neutral-100">
-                                                                <td class="py-1 px-2 text-neutral-700" x-text="e.bench"></td>
+                                                            <tr class="border-b border-neutral-100" :class="suitEvalIsStale(modelId, e) ? 'text-neutral-400' : ''">
+                                                                <td class="py-1 px-2 text-neutral-700" :class="suitEvalIsStale(modelId, e) ? 'text-neutral-400' : ''">
+                                                                    <span x-text="e.bench"></span>
+                                                                    <span x-show="suitEvalIsStale(modelId, e)" x-cloak
+                                                                          class="ml-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700"
+                                                                          :title="'{{ t('suitability.table.stale_record_title') }}'">{{ t('suitability.table.stale_record') }}</span>
+                                                                </td>
                                                                 <td class="py-1 px-2 text-neutral-500" x-text="e.axis"></td>
                                                                 <td class="py-1 px-2 text-right font-medium tabular-nums" x-text="(e.accuracy * 100).toFixed(1) + '%'"></td>
                                                                 <td class="py-1 px-2 text-right tabular-nums text-neutral-500" x-text="e.n"></td>

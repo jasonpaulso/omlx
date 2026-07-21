@@ -100,6 +100,7 @@ async def run_prefill_probe(
     model_id: str,
     *,
     depths: tuple[int, ...] = DEFAULT_DEPTHS,
+    weights_fingerprint: str | None = None,
 ) -> dict[int, float] | None:
     """Acquire the model, probe prefill throughput, persist it. Best-effort.
 
@@ -107,6 +108,10 @@ async def run_prefill_probe(
     writes the result via ``store.record_prefill``. Returns the samples, or
     None if the engine could not be acquired or nothing measured. Never
     raises: probing is an optimisation, not a serving path.
+
+    `weights_fingerprint` is passed through to the record so the table can
+    flag a probe that predates the weights now on disk. The caller supplies
+    it (routing doesn't reach into the model directory).
     """
     try:
         engine = await engine_pool.get_engine(
@@ -120,7 +125,7 @@ async def run_prefill_probe(
         logger.warning("prefill probe measured nothing for %s", model_id)
         return None
     try:
-        store.record_prefill(model_id, samples)
+        store.record_prefill(model_id, samples, weights_fingerprint=weights_fingerprint)
     except Exception as e:  # noqa: BLE001
         logger.warning("prefill probe could not record %s: %s", model_id, e)
         return None
