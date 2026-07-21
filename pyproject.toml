@@ -234,6 +234,11 @@ include = ["omlx*"]
 override-dependencies = [
     "mlx==0.32.0",
     "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@ab1806e8f5d6aa035973af194a1b9198ab4754dc",
+    # xgrammar 0.2.4 added `transformers<5`, which no uv resolve can satisfy
+    # against this project's `transformers>=5.7.0,<5.13` — `uv sync` / `uv run`
+    # fail outright. Override the transitive bound; the [grammar] extra is
+    # optional and tests/test_torch_stub.py gates the pair.
+    "transformers>=5.7.0,<5.13",
 ]
 
 [tool.black]
