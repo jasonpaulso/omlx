@@ -353,7 +353,8 @@
                                         <input type="text" list="router-target-models" x-model="routerConfig.targets.small"
                                                class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
                                         <span x-show="targetHealth.small?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
-                                        <span x-show="targetHealth.small?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.small?.resolves === false && !targetHealth.small?.healed_to" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.small?.resolves === false && targetHealth.small?.healed_to" class="text-xs text-amber-600 font-medium" x-text="'⚠ ' + window.t('router.target_healed_to').replace('{target}', targetHealth.small?.healed_to)"></span>
                                     </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
@@ -362,7 +363,8 @@
                                         <input type="text" list="router-target-models" x-model="routerConfig.targets.big"
                                                class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
                                         <span x-show="targetHealth.big?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
-                                        <span x-show="targetHealth.big?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.big?.resolves === false && !targetHealth.big?.healed_to" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.big?.resolves === false && targetHealth.big?.healed_to" class="text-xs text-amber-600 font-medium" x-text="'⚠ ' + window.t('router.target_healed_to').replace('{target}', targetHealth.big?.healed_to)"></span>
                                     </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
@@ -374,7 +376,8 @@
                                         <input type="text" list="router-target-models" x-model="routerConfig.targets.vision"
                                                class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
                                         <span x-show="targetHealth.vision?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
-                                        <span x-show="targetHealth.vision?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.vision?.resolves === false && !targetHealth.vision?.healed_to" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.vision?.resolves === false && targetHealth.vision?.healed_to" class="text-xs text-amber-600 font-medium" x-text="'⚠ ' + window.t('router.target_healed_to').replace('{target}', targetHealth.vision?.healed_to)"></span>
                                     </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
@@ -411,7 +414,8 @@
                                         <input type="text" list="router-target-models" x-model="routerConfig.policy.fail_open_target"
                                                class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
                                         <span x-show="targetHealth.fail_open_target?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
-                                        <span x-show="targetHealth.fail_open_target?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.fail_open_target?.resolves === false && !targetHealth.fail_open_target?.healed_to" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.fail_open_target?.resolves === false && targetHealth.fail_open_target?.healed_to" class="text-xs text-amber-600 font-medium" x-text="'⚠ ' + window.t('router.target_healed_to').replace('{target}', targetHealth.fail_open_target?.healed_to)"></span>
                                     </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">
@@ -496,7 +500,8 @@
                                         <input type="text" list="router-target-models" x-model="routerConfig.table_dispatch.default_target"
                                                class="px-3 py-2 text-sm border border-neutral-200 rounded-lg focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white w-full font-mono text-xs">
                                         <span x-show="targetHealth.default_target?.resolves === true" class="text-xs text-green-600 font-medium">✓ available</span>
-                                        <span x-show="targetHealth.default_target?.resolves === false" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.default_target?.resolves === false && !targetHealth.default_target?.healed_to" class="text-xs text-red-600 font-medium">✗ not on roster</span>
+                                        <span x-show="targetHealth.default_target?.resolves === false && targetHealth.default_target?.healed_to" class="text-xs text-amber-600 font-medium" x-text="'⚠ ' + window.t('router.target_healed_to').replace('{target}', targetHealth.default_target?.healed_to)"></span>
                                     </div>
                                 </div>
                                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-3">

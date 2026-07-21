@@ -109,6 +109,7 @@ from .api.markitdown import (
     stream_messages_to_markdown_async,
 )
 from .routing import RoutingService
+from .routing.target_heal import visible_roster_ids
 from .settings import RoutingSettings
 
 # Import from new modular API
@@ -486,21 +487,53 @@ async def lifespan(app: FastAPI):
             gs = _server_state.global_settings
             return bool(gs and gs.model.model_fallback)
 
-        service.set_validity_sources(_is_valid_target, _model_fallback_enabled)
+        def _routing_roster_ids() -> list[str]:
+            # Chat-visible roster ids for same-family self-heal (target_heal),
+            # filtered by the same visibility predicate /v1/models uses
+            # (is_hidden + the global helper/draft hide) -- a heal must never
+            # reach a model the operator has hidden or a spec-decode helper,
+            # since a heal picks the model itself rather than an operator
+            # naming it in a slot. Pool absent -> empty list -> heal_target
+            # finds no candidates -> heal is a no-op, same fail-open posture
+            # as _is_valid_target.
+            pool = _server_state.engine_pool
+            if pool is None:
+                return []
+            hide_helpers = bool(
+                _server_state.global_settings is not None
+                and _server_state.global_settings.model.hide_helper_models
+            )
+            return visible_roster_ids(
+                pool.get_status()["models"],
+                _server_state.settings_manager,
+                hide_helpers,
+            )
+
+        service.set_validity_sources(
+            _is_valid_target, _model_fallback_enabled, _routing_roster_ids
+        )
         # Loud at startup: a routing target whose model left the roster (e.g. a
         # requantize renamed the weights) is otherwise invisible until the rare
         # fallback path fires. Surface it now; the admin Router tab keeps it live.
         try:
             _health = service.validate_targets()
-            _bad = {
-                name: h["id"] for name, h in _health.items() if h["resolves"] is False
-            }
+            _bad = {name: h for name, h in _health.items() if h["resolves"] is False}
             if _bad:
+                _parts = []
+                for _name, _h in _bad.items():
+                    if _h.get("healed_to"):
+                        _parts.append(
+                            f"{_name}={_h['id']!r} "
+                            f"(self-healing to {_h['healed_to']!r})"
+                        )
+                    else:
+                        _parts.append(f"{_name}={_h['id']!r}")
                 logger.warning(
                     "Routing: %d target(s) do not resolve on the roster: %s; "
-                    "requests hitting these fall back per model.model_fallback",
+                    "requests hitting a target with no same-family sibling "
+                    "fall back per model.model_fallback",
                     len(_bad),
-                    ", ".join(f"{n}={mid!r}" for n, mid in _bad.items()),
+                    ", ".join(_parts),
                 )
         except Exception as e:  # pragma: no cover - health check is best-effort
             logger.debug("Routing target health check skipped: %s", e)

@@ -34,10 +34,11 @@ def test_finalize_target_valid_passthrough(tmp_path):
     service = RoutingService(settings)
     service.set_validity_sources(valid_getter_for({"good-model"}), lambda: True)
 
-    target, invalid = service._finalize_target("good-model")
+    target, invalid, healed_from = service._finalize_target("good-model")
 
     assert target == "good-model"
     assert invalid is None
+    assert healed_from is None
 
 
 def test_finalize_target_substitutes_default_target_first(tmp_path):
@@ -54,10 +55,11 @@ def test_finalize_target_substitutes_default_target_first(tmp_path):
         lambda: True,
     )
 
-    target, invalid = service._finalize_target("stale-model")
+    target, invalid, healed_from = service._finalize_target("stale-model")
 
     assert target == "gen-model"  # default_target wins the ladder
     assert invalid == "stale-model"
+    assert healed_from is None
 
 
 def test_finalize_target_ladder_falls_to_big_over_small(tmp_path):
@@ -69,10 +71,11 @@ def test_finalize_target_ladder_falls_to_big_over_small(tmp_path):
         valid_getter_for({"big-model", "small-model"}), lambda: True
     )
 
-    target, invalid = service._finalize_target("stale-model")
+    target, invalid, healed_from = service._finalize_target("stale-model")
 
     assert target == "big-model"
     assert invalid == "stale-model"
+    assert healed_from is None
 
 
 def test_finalize_target_passthrough_when_model_fallback_off(tmp_path):
@@ -83,10 +86,11 @@ def test_finalize_target_passthrough_when_model_fallback_off(tmp_path):
         valid_getter_for({"big-model", "small-model"}), lambda: False
     )
 
-    target, invalid = service._finalize_target("stale-model")
+    target, invalid, healed_from = service._finalize_target("stale-model")
 
     assert target == "stale-model"
     assert invalid == "stale-model"
+    assert healed_from is None
 
 
 def test_finalize_target_on_but_no_valid_candidate(tmp_path):
@@ -96,10 +100,11 @@ def test_finalize_target_on_but_no_valid_candidate(tmp_path):
     service = RoutingService(settings)
     service.set_validity_sources(valid_getter_for(set()), lambda: True)
 
-    target, invalid = service._finalize_target("stale-model")
+    target, invalid, healed_from = service._finalize_target("stale-model")
 
     assert target == "stale-model"
     assert invalid == "stale-model"
+    assert healed_from is None
 
 
 def test_finalize_target_substitute_false_never_swaps(tmp_path):
@@ -110,10 +115,13 @@ def test_finalize_target_substitute_false_never_swaps(tmp_path):
         valid_getter_for({"big-model", "small-model"}), lambda: True
     )
 
-    target, invalid = service._finalize_target("stale-vision-model", substitute=False)
+    target, invalid, healed_from = service._finalize_target(
+        "stale-vision-model", substitute=False
+    )
 
     assert target == "stale-vision-model"
     assert invalid == "stale-vision-model"
+    assert healed_from is None
 
 
 def test_finalize_target_unwired_resolver_fails_open(tmp_path):
@@ -121,10 +129,13 @@ def test_finalize_target_unwired_resolver_fails_open(tmp_path):
     service = RoutingService(settings)
     # set_validity_sources never called.
 
-    target, invalid = service._finalize_target("looks-invalid-but-unchecked")
+    target, invalid, healed_from = service._finalize_target(
+        "looks-invalid-but-unchecked"
+    )
 
     assert target == "looks-invalid-but-unchecked"
     assert invalid is None
+    assert healed_from is None
 
 
 def test_finalize_target_raising_valid_getter_fails_open(tmp_path):
@@ -136,10 +147,11 @@ def test_finalize_target_raising_valid_getter_fails_open(tmp_path):
 
     service.set_validity_sources(_raising_getter, lambda: True)
 
-    target, invalid = service._finalize_target("some-model")
+    target, invalid, healed_from = service._finalize_target("some-model")
 
     assert target == "some-model"
     assert invalid is None
+    assert healed_from is None
 
 
 # --- validate_targets() ---------------------------------------------------
@@ -153,8 +165,8 @@ def test_validate_targets_unset_slot_is_none(tmp_path):
 
     report = service.validate_targets()
 
-    assert report["big"] == {"id": None, "resolves": None}
-    assert report["vision"] == {"id": None, "resolves": None}
+    assert report["big"] == {"id": None, "resolves": None, "healed_to": None}
+    assert report["vision"] == {"id": None, "resolves": None, "healed_to": None}
 
 
 def test_validate_targets_valid_and_stale_slots(tmp_path):
@@ -165,8 +177,16 @@ def test_validate_targets_valid_and_stale_slots(tmp_path):
 
     report = service.validate_targets()
 
-    assert report["small"] == {"id": "small-model", "resolves": True}
-    assert report["big"] == {"id": "stale-big-model", "resolves": False}
+    assert report["small"] == {
+        "id": "small-model",
+        "resolves": True,
+        "healed_to": None,
+    }
+    assert report["big"] == {
+        "id": "stale-big-model",
+        "resolves": False,
+        "healed_to": None,
+    }
 
 
 def test_validate_targets_fail_open_target_resolves_through_targets_map(tmp_path):
@@ -180,7 +200,11 @@ def test_validate_targets_fail_open_target_resolves_through_targets_map(tmp_path
 
     report = service.validate_targets()
 
-    assert report["fail_open_target"] == {"id": "big-model", "resolves": True}
+    assert report["fail_open_target"] == {
+        "id": "big-model",
+        "resolves": True,
+        "healed_to": None,
+    }
 
 
 # --- tokenizer_target() ----------------------------------------------------

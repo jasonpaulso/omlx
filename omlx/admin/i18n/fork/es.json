@@ -68,5 +68,6 @@
   "suitability.axis.knowledge": "Knowledge",
   "suitability.axis.reasoning": "Reasoning",
   "suitability.axis.safety": "Safety",
-  "suitability.axis.agentic": "Agentic"
+  "suitability.axis.agentic": "Agentic",
+  "router.target_healed_to": "auto-reparando a '{target}'"
 }

@@ -17,7 +17,7 @@ import logging
 import re
 import time
 from collections import OrderedDict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +27,7 @@ from omlx.routing import table as dispatch_table
 from omlx.routing.policy import decide
 from omlx.routing.profiler import RouterFeatures, make_profiler
 from omlx.routing.shadow import ShadowLabeler, elide
+from omlx.routing.target_heal import heal_target
 from omlx.settings import RoutingSettings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ EnabledGetter = Callable[[], set[str]]
 # exactly as before (fail-open).
 ValidGetter = Callable[[str], bool]
 FallbackGetter = Callable[[], bool]
+# Live roster ids for same-family self-heal (target_heal.heal_target). Optional:
+# absent -> heal is disabled and a stale target behaves exactly as before
+# (substitute-or-passthrough per _finalize_target's existing ladder).
+RosterGetter = Callable[[], Iterable[str]]
 
 # Orphan flush (P1-D): a 507/disconnected request never calls
 # record_outcome, so its pending row would otherwise sit in memory until
@@ -51,6 +56,11 @@ _ORPHAN_MAX_AGE_S = 600
 # dicts are shared with _pending, so outcomes and shadow labels appear in
 # the buffer as they land without extra bookkeeping.
 _RECENT_MAX = 256
+
+# Cap on the (stale, healed) heal-log dedup cache -- it exists only to
+# silence repeat WARNINGs, not as a ledger, so it's fine to forget the
+# oldest pair once a lot of distinct slots have churned through healing.
+_HEALED_LOG_MAX = 256
 
 
 @dataclass
@@ -71,6 +81,11 @@ class RouteDecision:
     # the request was substituted to a valid target or passed through to the
     # server's default-or-404 contract; surfaced in telemetry and the header.
     invalid_target: str | None = None
+    # Stale target id healed to `target` via target_heal.heal_target (same
+    # family, different quant). Distinct from invalid_target: a heal reaches
+    # the *correct* model, so invalid_target is None on a healed decision --
+    # this field is the only record that a heal happened.
+    healed_from: str | None = None
 
     @property
     def header_value(self) -> str:
@@ -81,6 +96,8 @@ class RouteDecision:
         )
         if self.invalid_target:
             base += f"; invalid_target={self.invalid_target}"
+        if self.healed_from:
+            base += f"; healed_from={self.healed_from}"
         return base
 
 
@@ -429,6 +446,12 @@ class RoutingService:
         self._enabled_getter: EnabledGetter | None = None
         self._valid_getter: ValidGetter | None = None
         self._model_fallback_getter: FallbackGetter | None = None
+        self._roster_getter: RosterGetter | None = None
+        # (stale_id, healed_id) pairs already logged, so a hot slot heals
+        # silently after the first WARNING instead of flooding per request.
+        # Bounded (oldest evicted first): a dedup cache, not a ledger --
+        # unbounded growth here would be a slow leak across settings churn.
+        self._healed_logged: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._pending: dict[str, dict[str, Any]] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=_RECENT_MAX)
         # Implicit feedback (M6.1, off by default): bounded content-hash index
@@ -486,6 +509,7 @@ class RoutingService:
         self,
         valid_getter: ValidGetter,
         model_fallback_getter: FallbackGetter,
+        roster_getter: RosterGetter | None = None,
     ) -> None:
         """Wire roster-validity + default-model-fallback snapshots.
 
@@ -496,9 +520,15 @@ class RoutingService:
         cheap sync callables. When unset (or when either raises), target
         validation is skipped and routing behaves exactly as before: a stale
         target passes through to the server's model-load contract.
+
+        `roster_getter` (optional) returns the live roster's raw model ids,
+        used to self-heal a stale slot to its same-family sibling (e.g. a
+        requantize from `-oQ6e` to `-oQ8e`). None (the default) disables
+        healing entirely -- byte-identical to today's behavior.
         """
         self._valid_getter = valid_getter
         self._model_fallback_getter = model_fallback_getter
+        self._roster_getter = roster_getter
 
     def _target_resolves(self, model_id: str | None) -> bool:
         """True if `model_id` resolves on the live roster.
@@ -522,27 +552,72 @@ class RoutingService:
         except Exception:  # noqa: BLE001
             return False
 
+    def _heal_candidate(self, stale_id: str) -> str | None:
+        """Same-family roster sibling for `stale_id`, or None. No logging.
+
+        Pure lookup used by both the request-path heal (which logs) and
+        `validate_targets` (polled by the admin tab; must not log per poll).
+        Fail-open: no roster source wired, or the source raises -> None.
+        """
+        if self._roster_getter is None:
+            return None
+        try:
+            roster_ids = list(self._roster_getter())
+        except Exception:  # noqa: BLE001 - heal must never break routing
+            return None
+        return heal_target(stale_id, roster_ids)
+
+    def _heal_target(self, stale_id: str) -> str | None:
+        """`_heal_candidate` plus a once-per-pair WARNING on a fresh heal."""
+        healed = self._heal_candidate(stale_id)
+        if healed is not None:
+            pair = (stale_id, healed)
+            if pair not in self._healed_logged:
+                self._healed_logged[pair] = None
+                if len(self._healed_logged) > _HEALED_LOG_MAX:
+                    self._healed_logged.popitem(last=False)
+                logger.warning(
+                    "Routing: target %r no longer resolves on the roster; "
+                    "self-healing to same-family sibling %r",
+                    stale_id,
+                    healed,
+                )
+        return healed
+
     def _finalize_target(
         self, proposed: str, *, substitute: bool = True
-    ) -> tuple[str, str | None]:
-        """Validate a proposed target; substitute a valid one or pass through.
+    ) -> tuple[str, str | None, str | None]:
+        """Validate a proposed target; heal, substitute, or pass through.
 
-        Returns ``(target, invalid_target)``. ``invalid_target`` is None when
-        ``proposed`` resolves on the roster. When it does not:
+        Returns ``(target, invalid_target, healed_from)``. ``invalid_target``
+        is None when ``proposed`` resolves on the roster *or* was healed to a
+        same-family sibling (a heal reaches the correct model, just at a
+        different quant, so it isn't "invalid" in the substitution sense).
+        ``healed_from`` is ``proposed`` when a heal fired, else None -- the
+        only signal that a heal happened, since ``invalid_target`` stays None.
+
+        When ``proposed`` does not resolve and has no unique same-family
+        roster sibling:
 
         - if ``substitute`` and ``model_fallback`` is on, swap in the first
           valid configured routing target (default_target, big, small, vision)
-          and return ``(substitute, proposed)``;
-        - otherwise return ``(proposed, proposed)`` unchanged, so the server's
-          model-load contract (default-model-or-404, per model_fallback)
-          applies downstream.
+          and return ``(substitute, proposed, None)``;
+        - otherwise return ``(proposed, proposed, None)`` unchanged, so the
+          server's model-load contract (default-model-or-404, per
+          model_fallback) applies downstream.
 
-        Never raises. ``substitute=False`` (modality path) validates and records
-        but never swaps: a text generalist cannot see media, so a stale vision
-        target must fall through rather than silently downgrade.
+        Never raises. ``substitute=False`` (modality path) still heals --
+        healing to the same model at a different quant is not the
+        cross-substitution that path guards against -- but never swaps to a
+        different model: a text generalist cannot see media, so a stale
+        vision target with no same-family sibling must fall through rather
+        than silently downgrade.
         """
         if self._target_resolves(proposed):
-            return proposed, None
+            return proposed, None, None
+        healed = self._heal_target(proposed)
+        if healed is not None:
+            return healed, None, proposed
         if substitute and self._fallback_enabled():
             t = self.settings.targets
             for cand in (
@@ -552,8 +627,8 @@ class RoutingService:
                 t.get("vision"),
             ):
                 if cand and cand != proposed and self._target_resolves(cand):
-                    return cand, proposed
-        return proposed, proposed
+                    return cand, proposed, None
+        return proposed, proposed, None
 
     def tokenizer_target(self) -> str:
         """Concrete model id whose tokenizer stands in for the virtual id.
@@ -565,16 +640,20 @@ class RoutingService:
         """
         target_key = self.settings.policy.fail_open_target
         proposed = self.settings.targets.get(target_key, target_key)
-        final_target, _ = self._finalize_target(proposed)
+        final_target, _, _ = self._finalize_target(proposed)
         return final_target
 
     def validate_targets(self) -> dict[str, dict[str, Any]]:
         """Roster health of every configured routing target.
 
-        Returns ``{slot: {"id": model_id|None, "resolves": bool|None}}`` for
-        the small/big/vision/default_target/fail_open_target slots. ``resolves``
-        is None when the slot is unset. Cheap (set membership) and safe to call
-        at startup and on every admin Router-tab fetch.
+        Returns ``{slot: {"id": model_id|None, "resolves": bool|None,
+        "healed_to": str|None}}`` for the small/big/vision/default_target/
+        fail_open_target slots. ``resolves`` is None when the slot is unset;
+        it stays False for a stale-but-healable id so the startup warning
+        and admin badge don't go quiet -- healing happens at resolution
+        time, not here. ``healed_to`` names the same-family roster sibling
+        when one uniquely exists, else None. Cheap (set membership) and safe
+        to call at startup and on every admin Router-tab fetch.
         """
         t = self.settings.targets
         fo_key = self.settings.policy.fail_open_target
@@ -585,13 +664,12 @@ class RoutingService:
             "default_target": self.settings.table_dispatch.default_target,
             "fail_open_target": (t.get(fo_key, fo_key) if fo_key else None),
         }
-        return {
-            name: {
-                "id": mid,
-                "resolves": (None if not mid else self._target_resolves(mid)),
-            }
-            for name, mid in slots.items()
-        }
+        result: dict[str, dict[str, Any]] = {}
+        for name, mid in slots.items():
+            resolves = None if not mid else self._target_resolves(mid)
+            healed_to = self._heal_candidate(mid) if mid and resolves is False else None
+            result[name] = {"id": mid, "resolves": resolves, "healed_to": healed_to}
+        return result
 
     async def route_chat_request(
         self,
@@ -614,7 +692,7 @@ class RoutingService:
         if modality is not None:
             modality_target = self.settings.targets.get(modality)
             if modality_target:
-                final_target, invalid = self._finalize_target(
+                final_target, invalid, healed_from = self._finalize_target(
                     modality_target, substitute=False
                 )
                 decision = RouteDecision(
@@ -625,6 +703,7 @@ class RoutingService:
                     raw_analysis=None,
                     classify_ms=(time.perf_counter() - start) * 1000,
                     invalid_target=invalid,
+                    healed_from=healed_from,
                 )
                 self._record_decision(decision, request_id, endpoint, stream, messages)
                 return decision
@@ -707,7 +786,9 @@ class RoutingService:
         # binary pair when the table has data; binary remains the fallback.
         table_choice = self._try_table(features, override, messages)
         if table_choice is not None and table_choice.target is not None:
-            final_target, invalid = self._finalize_target(table_choice.target)
+            final_target, invalid, healed_from = self._finalize_target(
+                table_choice.target
+            )
             decision = RouteDecision(
                 target=final_target,
                 rule_fired=table_choice.rule,
@@ -720,6 +801,7 @@ class RoutingService:
                 disabled=table_choice.disabled or None,
                 slow_ttft=table_choice.slow_ttft or None,
                 invalid_target=invalid,
+                healed_from=healed_from,
             )
             self._record_decision(decision, request_id, endpoint, stream, messages)
             return decision
@@ -727,7 +809,7 @@ class RoutingService:
         target_key, rule_fired = decide(features, override, cfg)
         classify_ms = (time.perf_counter() - start) * 1000
         proposed = self.settings.targets.get(target_key, target_key)
-        final_target, invalid = self._finalize_target(proposed)
+        final_target, invalid, healed_from = self._finalize_target(proposed)
         decision = RouteDecision(
             target=final_target,
             rule_fired=rule_fired,
@@ -736,6 +818,7 @@ class RoutingService:
             raw_analysis=raw_analysis,
             classify_ms=classify_ms,
             invalid_target=invalid,
+            healed_from=healed_from,
         )
         self._record_decision(decision, request_id, endpoint, stream, messages)
         return decision
@@ -841,7 +924,7 @@ class RoutingService:
     ) -> RouteDecision:
         target_key = self.settings.policy.fail_open_target
         proposed = self.settings.targets.get(target_key, target_key)
-        final_target, invalid = self._finalize_target(proposed)
+        final_target, invalid, healed_from = self._finalize_target(proposed)
         return RouteDecision(
             target=final_target,
             rule_fired=f"fail_open:{reason}",
@@ -850,6 +933,7 @@ class RoutingService:
             raw_analysis=None,
             classify_ms=(time.perf_counter() - start) * 1000,
             invalid_target=invalid,
+            healed_from=healed_from,
         )
 
     def record_outcome(
@@ -1104,6 +1188,7 @@ class RoutingService:
             "rule_fired": decision.rule_fired,
             "target": decision.target,
             "invalid_target": decision.invalid_target,
+            "healed_from": decision.healed_from,
             "classify_ms": round(decision.classify_ms, 1),
             "candidates_considered": (
                 [[m, round(s, 4)] for m, s in decision.candidates]
