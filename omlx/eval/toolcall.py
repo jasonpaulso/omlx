@@ -245,13 +245,16 @@ class ToolCallBenchmark(BaseBenchmark):
         index: int,
         sampling_kwargs: dict | None = None,
         enable_thinking: bool = False,
-    ) -> tuple[int, dict, str, str, str]:
+    ) -> tuple[int, dict, str, str, str, dict[str, Any]]:
         """Evaluate one item, passing tools and scoring the parsed calls.
 
         Mirrors BaseBenchmark._eval_single's kwargs discipline exactly,
         adds tools= to the chat call, and returns the canonical JSON of
         the parsed calls in the response-text slot (raw model text stays
         in the raw slot for thinking auto-detection and debuggability).
+
+        The trailing empty dict is the diagnostics slot upstream added in
+        0.5.2; toolcall only runs against local engines, so it is always {}.
         """
         messages = self.format_prompt(item)
         prompt_text = "\n".join(m.get("content", "") for m in messages)
@@ -281,7 +284,7 @@ class ToolCallBenchmark(BaseBenchmark):
             )
             raw_text = output.text
             canonical = _canonicalize_calls(self._parsed_calls(output, engine, item))
-            return index, item, canonical, prompt_text, raw_text
+            return index, item, canonical, prompt_text, raw_text, {}
         except Exception as e:
             logger.warning(f"Engine error on question {index}: {e}")
-            return index, item, "", prompt_text, ""
+            return index, item, "", prompt_text, "", {}

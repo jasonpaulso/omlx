@@ -408,8 +408,9 @@ class TestEvalSingle:
         )
         engine = _StubEngine(output=output)
         result = asyncio.run(self.bench._eval_single(engine, item, 3))
-        index, ret_item, canonical, prompt_text, raw_text = result
+        index, ret_item, canonical, prompt_text, raw_text, diagnostics = result
         assert index == 3
+        assert diagnostics == {}
         assert ret_item is item
         assert json.loads(canonical) == [
             {"name": "get_weather", "args": {"city": "Paris"}}
@@ -430,7 +431,7 @@ class TestEvalSingle:
         )
         engine = _StubEngine(output=output)
         result = asyncio.run(self.bench._eval_single(engine, item, 0))
-        _, _, canonical, _, raw_text = result
+        _, _, canonical, _, raw_text, _ = result
         assert json.loads(canonical) == [
             {"name": "get_weather", "args": {"city": "Paris"}}
         ]
@@ -441,8 +442,9 @@ class TestEvalSingle:
         item = _weather_item()
         engine = _StubEngine(raise_exc=RuntimeError("boom"))
         result = asyncio.run(self.bench._eval_single(engine, item, 7))
-        index, ret_item, canonical, prompt_text, raw_text = result
+        index, ret_item, canonical, prompt_text, raw_text, diagnostics = result
         assert index == 7
+        assert diagnostics == {}
         assert canonical == ""
         assert raw_text == ""
         assert prompt_text == "Weather in Paris?"
