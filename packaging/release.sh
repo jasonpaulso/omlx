@@ -75,6 +75,7 @@ B1=$(netstat -ib | awk '$1=="en0"{print $7; exit}'); sleep 15
 B2=$(netstat -ib | awk '$1=="en0"{print $7; exit}'); echo $((B2-B1))
 EOS
     )
+    delta="${delta:-0}"
     [ "$delta" -lt 20000000 ] || die "box is moving ${delta} bytes/15s — active transfer, not installing"
 }
 
