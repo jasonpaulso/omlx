@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 import mlx.core as mx
 
 from . import settings as _settings
+from .engine.base import BaseNonStreamingEngine
 from .utils import psutil_compat
 from .utils.proc_memory import get_phys_footprint
 
@@ -683,6 +684,28 @@ class ProcessMemoryEnforcer:
             return self._get_hard_limit_bytes()
         return self._get_static_ceiling()
 
+    def get_admission_soft_target(self) -> int:
+        """Soft watermark that pre-load admission evicts down to (#2319).
+
+        The admission check used to evict idle models only when the
+        projected total exceeded the final ceiling, while every other
+        pressure mechanism (pressure levels, prefill-headroom eviction)
+        targets the soft watermark. A second model admitted into the
+        soft..ceiling band kept both models resident through the load,
+        pushing the process into hard-pressure swap until the first
+        request's prefill guard finally evicted the old one. Exposing the
+        soft watermark lets the engine pool evict idle LRU models down to
+        the same target *before* the new weights start allocating; load
+        refusal stays governed by the admission ceiling.
+
+        Returns 0 when no ceiling is available (callers fall back to
+        ceiling-only admission).
+        """
+        ceiling = self.get_admission_ceiling()
+        if ceiling <= 0:
+            return 0
+        return int(ceiling * self._soft_threshold)
+
     def _get_abort_limit_bytes(self) -> int:
         """Stable physical cap used to ABORT an in-flight prefill.
 
@@ -1075,6 +1098,12 @@ class ProcessMemoryEnforcer:
                 ):
                     continue
                 if getattr(engine, "is_diffusion_model", False):
+                    continue
+                if isinstance(engine, BaseNonStreamingEngine):
+                    # TTS/STT/STS/Embedding/Reranker engines run on the MLX
+                    # executor without a Scheduler, so an unresolvable
+                    # scheduler is their normal shape, not a wrapper break.
+                    # Warning here reads as a guard regression (#2312).
                     continue
                 # Silent no-op was the failure mode that originally hid
                 # the dead memory guard: a wrapper-chain change made
