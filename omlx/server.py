@@ -5573,6 +5573,8 @@ async def create_anthropic_message(
                 elif thinking_type == "disabled":
                     merged_ct_kwargs["enable_thinking"] = False
 
+        _entry = get_engine_pool().get_entry(resolved_model)
+
         logger.debug(
             f"Tool result truncation config: max_tokens={max_tool_result_tokens}, "
             f"has_tokenizer={engine.tokenizer is not None}"
@@ -5584,7 +5586,6 @@ async def create_anthropic_message(
         is_dflash_vlm = not is_vlm and getattr(
             engine, "supports_multimodal_fallback", False
         )
-        _entry = get_engine_pool().get_entry(resolved_model)
         native_reasoning = uses_native_reasoning_content(
             resolved_model,
             config_model_type=(
@@ -6148,6 +6149,8 @@ async def create_response(
             request.chat_template_kwargs,
         )
 
+        _entry = get_engine_pool().get_entry(resolved_model)
+
         # Note: extract_text_content/extract_harmony_messages/extract_multimodal_content
         # are NOT called here because convert_responses_input_to_messages() already
         # returns plain dicts in {"role": str, "content": str} format.
@@ -6289,7 +6292,6 @@ async def create_response(
         # Auto-set preserve_thinking only when the template advertises support
         # for it (Qwen 3.6+). Gated on detection so other templates don't
         # receive an unknown kwarg.
-        _entry = get_engine_pool().get_entry(resolved_model)
         native_reasoning = bool(_entry and _entry.preserve_thinking_default is True)
         if (
             native_reasoning
