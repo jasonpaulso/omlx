@@ -214,7 +214,9 @@ class ToolCallBenchmark(BaseBenchmark):
         """Normalize parsed tool calls to [{"name": str, "args": dict}]."""
         engine_calls = getattr(output, "tool_calls", None)
         if engine_calls:
-            # Engine-side parse (e.g. Harmony): list of OpenAI-shaped dicts
+            # Engine-side parse (e.g. Harmony, or external API adapters that
+            # surface the OpenAI-shaped tool_calls from the endpoint): list
+            # of OpenAI-shaped dicts.
             normalized = []
             for tc in engine_calls:
                 fn = tc.get("function", tc) if isinstance(tc, dict) else tc
@@ -227,6 +229,14 @@ class ToolCallBenchmark(BaseBenchmark):
                     }
                 )
             return normalized
+        # Fallback: parse the raw text. Requires a local tokenizer (regex-based
+        # format-aware parser). External API adapters do not carry a tokenizer,
+        # and there is no portable tokenizer-free path that handles the full
+        # BFCL grammar, so we surface zero calls rather than crash — endpoints
+        # that embed tool calls in text without surfacing them as tool_calls
+        # are not scorable through this benchmark.
+        if getattr(engine, "tokenizer", None) is None:
+            return []
         _, tool_calls = parse_tool_calls(output.text, engine.tokenizer, item["tools"])
         if not tool_calls:
             return []

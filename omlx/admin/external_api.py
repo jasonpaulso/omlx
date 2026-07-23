@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import httpx
@@ -130,6 +130,10 @@ class ChatResult:
     status: str = "ok"
     reasoning_fields_present: tuple[str, ...] = ()
     reasoning_fields_nonempty: tuple[str, ...] = ()
+    # OpenAI-shaped tool calls: [{"id", "type", "function": {"name", "arguments"}}]
+    # Pass-through from the endpoint's choices[0].message.tool_calls. Empty list
+    # when the endpoint didn't return any, or none were requested.
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 def _extract_error_detail(body: str) -> str:
@@ -324,6 +328,17 @@ class ExternalAPIClient:
                 status="invalid_response",
             )
 
+        # OpenAI-shaped pass-through. Endpoints that don't surface tool_calls
+        # (or for which none were requested) leave this empty; eval then treats
+        # the response as zero calls, which is correct for irrelevance cases.
+        raw_tool_calls = message.get("tool_calls")
+        if raw_tool_calls is None:
+            tool_calls: list[dict] = []
+        elif isinstance(raw_tool_calls, list):
+            tool_calls = [tc for tc in raw_tool_calls if isinstance(tc, dict)]
+        else:
+            tool_calls = []
+
         finish_reason_value = choice.get("finish_reason")
         finish_reason = (
             str(finish_reason_value) if finish_reason_value is not None else None
@@ -347,6 +362,7 @@ class ExternalAPIClient:
             status=status,
             reasoning_fields_present=reasoning_present,
             reasoning_fields_nonempty=reasoning_nonempty,
+            tool_calls=tool_calls,
         )
 
     async def stream_chat_completion(
@@ -436,7 +452,7 @@ class ExternalAPIClient:
 
 @dataclass
 class _AdapterOutput:
-    """Minimal GenerationOutput stand-in; eval code only reads .text."""
+    """Minimal GenerationOutput stand-in; eval code only reads .text and .tool_calls."""
 
     text: str
     prompt_tokens: int = 0
@@ -446,6 +462,11 @@ class _AdapterOutput:
     reasoning_fields_present: tuple[str, ...] = ()
     reasoning_fields_nonempty: tuple[str, ...] = ()
     error_message: str = ""
+    # OpenAI-shaped tool calls from the endpoint. Empty list when none.
+    # The toolcall eval reads this attribute and skips its tokenizer-dependent
+    # fallback when it's populated, which is what makes external-API accuracy
+    # benchmarks work.
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 class ExternalChatAdapter:
@@ -540,4 +561,5 @@ class ExternalChatAdapter:
             finish_reason=result.finish_reason,
             reasoning_fields_present=result.reasoning_fields_present,
             reasoning_fields_nonempty=result.reasoning_fields_nonempty,
+            tool_calls=result.tool_calls,
         )
