@@ -80,7 +80,9 @@ EOS
 }
 
 _poll_health() { # $1 = "" or "ssh host"
-    for _ in $(seq 1 36); do
+    # 60 x 5s = 300s: a cold boot with model preload took ~4 min (2026-07-23),
+    # which falsely failed the previous 180s window.
+    for _ in $(seq 1 60); do
         code=$($1 curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://localhost:8888/health || true)
         [ "$code" = "200" ] && return 0
         sleep 5
