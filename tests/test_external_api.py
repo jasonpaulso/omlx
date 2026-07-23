@@ -690,6 +690,79 @@ class TestExternalChatAdapter:
 
         assert exc_info.value.status == expected_status
 
+    async def test_adapter_surfaces_tool_calls_from_endpoint(self):
+        # Endpoints (e.g. oMLX-compatible servers like ds4) may return
+        # OpenAI-shaped tool_calls on the assistant message. The adapter must
+        # surface them so accuracy benchmarks that depend on engine.tokenizer
+        # never reach their tokenizer-free fallback path.
+        tool_calls = [
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": json.dumps({"city": "Paris"}),
+                },
+            }
+        ]
+
+        def handler(request):
+            return _completion_response(
+                text="",
+                extra_message={"tool_calls": tool_calls},
+                finish_reason="tool_calls",
+            )
+
+        adapter, client = self._adapter(handler)
+        try:
+            output = await adapter.chat(
+                messages=[{"role": "user", "content": "weather?"}],
+                max_tokens=128,
+            )
+        finally:
+            await client.aclose()
+
+        assert output.tool_calls == tool_calls
+        assert output.finish_reason == "tool_calls"
+
+    async def test_adapter_tool_calls_default_to_empty_when_absent(self):
+        # Endpoints that don't return a tool_calls field must still produce
+        # an empty list (not raise, not None) so eval-side `getattr(... or [])`
+        # doesn't blow up.
+        def handler(request):
+            return _completion_response()
+
+        adapter, client = self._adapter(handler)
+        try:
+            output = await adapter.chat(messages=[{"role": "user", "content": "q"}])
+        finally:
+            await client.aclose()
+
+        assert output.tool_calls == []
+
+    async def test_adapter_drops_malformed_tool_call_entries(self):
+        # A non-dict entry in tool_calls (defensive) is dropped; dicts pass.
+        def handler(request):
+            return _completion_response(
+                extra_message={
+                    "tool_calls": [
+                        "not a dict",
+                        None,
+                        {"id": "ok", "type": "function", "function": {"name": "f"}},
+                    ]
+                }
+            )
+
+        adapter, client = self._adapter(handler)
+        try:
+            output = await adapter.chat(messages=[{"role": "user", "content": "q"}])
+        finally:
+            await client.aclose()
+
+        assert output.tool_calls == [
+            {"id": "ok", "type": "function", "function": {"name": "f"}}
+        ]
+
     async def test_question_error_is_returned_as_diagnostic_output(self):
         def handler(request):
             return httpx.Response(429, json={"error": {"message": "rate limited"}})
