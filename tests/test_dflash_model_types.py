@@ -12,6 +12,7 @@ from omlx.utils.model_loading import dflash_batched_supported, dflash_compatibil
         ("qwen3_5_moe", "vlm"),
         ("minicpmv4_7", "vlm"),
         ("qwen3_moe", "batched"),
+        ("llama", "batched"),
     ],
 )
 def test_supported_targets(model_type, engine_type):
